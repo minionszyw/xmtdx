@@ -8,6 +8,8 @@
 典型用途：价格差分、成交量差分、买卖档位数量。
 """
 
+from ..exceptions import TdxDecodeError
+
 
 def get_price(data: bytes | bytearray, pos: int) -> tuple[int, int]:
     """解码一个变长有符号整数。
@@ -16,18 +18,22 @@ def get_price(data: bytes | bytearray, pos: int) -> tuple[int, int]:
         (value, new_pos)
     """
     bit_shift = 6
-    b = data[pos]
-    value = b & 0x3F
-    negative = bool(b & 0x40)
+    start = pos
+    try:
+        b = data[pos]
+        value = b & 0x3F
+        negative = bool(b & 0x40)
 
-    if b & 0x80:
-        while True:
-            pos += 1
-            b = data[pos]
-            value |= (b & 0x7F) << bit_shift
-            bit_shift += 7
-            if not (b & 0x80):
-                break
+        if b & 0x80:
+            while True:
+                pos += 1
+                b = data[pos]
+                value |= (b & 0x7F) << bit_shift
+                bit_shift += 7
+                if not (b & 0x80):
+                    break
+    except IndexError as e:
+        raise TdxDecodeError(f"price varint 截断: offset={start}") from e
 
     pos += 1
     return (-value if negative else value), pos

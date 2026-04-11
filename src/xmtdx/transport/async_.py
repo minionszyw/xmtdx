@@ -38,9 +38,47 @@ class AsyncTdxConnection:
         self.timeout = timeout
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
+        # 单连接不支持请求复用；所有 IO 在连接内串行执行。
+        self._io_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         """建立 TCP 连接并完成握手。"""
+        async with self._io_lock:
+            if self._writer is not None and not self._writer.is_closing():
+                return
+            await self._connect_unlocked()
+
+    async def close(self) -> None:
+        """关闭连接。"""
+        async with self._io_lock:
+            await self._close_unlocked()
+
+    async def execute(self, cmd: "BaseCommand[T]") -> T:
+        """执行一条命令（异步版本）。
+
+        同一连接上的并发调用会在此处串行化，避免 StreamReader 并发读取冲突。
+        """
+        async with self._io_lock:
+            if self._writer is None or self._reader is None:
+                raise TdxConnectionError("未连接，请先调用 connect()")
+            request = cmd.build_request()
+            try:
+                self._writer.write(request)
+                await asyncio.wait_for(self._writer.drain(), timeout=self.timeout)
+                header_buf = await self._recv_exact(HEADER_SIZE)
+                header = parse_header(header_buf)
+                raw_body = await self._recv_exact(header.zipsize)
+            except asyncio.TimeoutError as e:
+                await self._close_unlocked()
+                raise TdxConnectionError(f"通信超时: {self.timeout}s") from e
+            except (OSError, asyncio.IncompleteReadError) as e:
+                await self._close_unlocked()
+                raise TdxConnectionError(f"通信错误: {e}") from e
+
+            body = decompress_body(header, raw_body)
+            return cmd.parse_response(body)
+
+    async def _connect_unlocked(self) -> None:
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port),
@@ -50,10 +88,13 @@ class AsyncTdxConnection:
             raise TdxConnectionError(f"无法连接 {self.host}:{self.port}: {e}") from e
         self._reader = reader
         self._writer = writer
-        await self._send_setup()
+        try:
+            await self._send_setup()
+        except Exception:
+            await self._close_unlocked()
+            raise
 
-    async def close(self) -> None:
-        """关闭连接。"""
+    async def _close_unlocked(self) -> None:
         if self._writer is not None:
             try:
                 self._writer.close()
@@ -62,22 +103,6 @@ class AsyncTdxConnection:
                 pass
             self._reader = None
             self._writer = None
-
-    async def execute(self, cmd: "BaseCommand[T]") -> T:
-        """执行一条命令（异步版本）。"""
-        if self._writer is None or self._reader is None:
-            raise TdxConnectionError("未连接，请先调用 connect()")
-        request = cmd.build_request()
-        try:
-            self._writer.write(request)
-            await self._writer.drain()
-            header_buf = await self._recv_exact(HEADER_SIZE)
-            header = parse_header(header_buf)
-            raw_body = await self._recv_exact(header.zipsize)
-        except (OSError, asyncio.IncompleteReadError) as e:
-            raise TdxConnectionError(f"通信错误: {e}") from e
-        body = decompress_body(header, raw_body)
-        return cmd.parse_response(body)
 
     # ------------------------------------------------------------------ #
     # context manager
@@ -105,11 +130,9 @@ class AsyncTdxConnection:
         assert self._reader is not None
         for cmd_bytes in SETUP_COMMANDS:
             self._writer.write(cmd_bytes)
-            await self._writer.drain()
+            await asyncio.wait_for(self._writer.drain(), timeout=self.timeout)
             try:
-                hdr_buf = await asyncio.wait_for(
-                    self._recv_exact(HEADER_SIZE), timeout=5.0
-                )
+                hdr_buf = await self._recv_exact(HEADER_SIZE)
                 hdr = parse_header(hdr_buf)
                 if hdr.zipsize > 0:
                     await self._recv_exact(hdr.zipsize)
@@ -119,5 +142,8 @@ class AsyncTdxConnection:
     async def _recv_exact(self, n: int) -> bytes:
         """读满 n 字节。"""
         assert self._reader is not None
-        data = await self._reader.readexactly(n)
+        data = await asyncio.wait_for(
+            self._reader.readexactly(n),
+            timeout=self.timeout,
+        )
         return data

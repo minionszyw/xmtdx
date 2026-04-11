@@ -122,6 +122,7 @@ class FinanceInfo:
 class CompanyInfoCategory:
     """公司信息文件目录条目"""
 
-    filename: str   # 文件名（如 '600000.txt'）
-    start: int      # 内容起始偏移
-    length: int     # 内容长度（字节）
+    name: str = ""      # 目录名（如“最新提示”）
+    filename: str = ""  # 文件名（如 '600000.txt'）
+    start: int = 0      # 内容起始偏移
+    length: int = 0     # 内容长度（字节）

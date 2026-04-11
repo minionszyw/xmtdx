@@ -1,6 +1,5 @@
 """get_price / put_price 单元测试，测试向量来自 pytdx 实际报文。"""
 
-import pytest
 from xmtdx.codec.price import get_price, put_price
 
 

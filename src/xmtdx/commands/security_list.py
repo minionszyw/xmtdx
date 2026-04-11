@@ -6,7 +6,7 @@
 
 import struct
 
-from ..codec.price import get_price
+from .._binary import slice_bytes, unpack_from
 from ..models.enums import Market
 from ..models.security import SecurityInfo
 from .base import BaseCommand
@@ -26,12 +26,12 @@ class GetSecurityListCmd(BaseCommand[list[SecurityInfo]]):
         return header + struct.pack("<HH", int(self.market), self.start)
 
     def parse_response(self, body: bytes) -> list[SecurityInfo]:
-        (num,) = struct.unpack_from("<H", body, 0)
+        (num,) = unpack_from("<H", body, 0, "security_list header")
         pos = 2
         results: list[SecurityInfo] = []
 
         for _ in range(num):
-            raw = body[pos : pos + _RECORD_SIZE]
+            raw = slice_bytes(body, pos, _RECORD_SIZE, "security_list record")
             (
                 code_bytes,
                 volunit,

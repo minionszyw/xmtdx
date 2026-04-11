@@ -31,7 +31,7 @@ class TransactionRecord:
     minute: int
     price: float
     vol: int
-    buyorsell: int  # 0=卖, 1=买, 2=中性/撮合
+    buyorsell: int  # 0=买, 1=卖, 2=中性/撮合, 8=集合竞价
 
     # pytdx 中被丢弃的字段
     unknown_last: int = field(default=0, repr=False)

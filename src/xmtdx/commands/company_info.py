@@ -2,6 +2,8 @@
 
 import struct
 
+from .._binary import slice_bytes, unpack_from
+from ..exceptions import TdxDecodeError
 from ..models.enums import Market
 from ..models.finance import CompanyInfoCategory
 from .base import BaseCommand
@@ -20,17 +22,16 @@ class GetCompanyInfoCategoryCmd(BaseCommand[list[CompanyInfoCategory]]):
 
     def parse_response(self, body: bytes) -> list[CompanyInfoCategory]:
         if len(body) < 2:
-            return []
-        (num,) = struct.unpack_from("<H", body, 0)
+            raise TdxDecodeError("company_info_category body 过短")
+        (num,) = unpack_from("<H", body, 0, "company_info_category header")
         pos = 2
         results: list[CompanyInfoCategory] = []
 
         # 每条记录：64字节name + 80字节filename + 4字节start + 4字节length = 152字节
         _RECORD_SIZE = 152
         for _ in range(num):
-            if pos + _RECORD_SIZE > len(body):
-                break
-            name_b, filename_b, start, length = struct.unpack_from("<64s80sII", body, pos)
+            raw = slice_bytes(body, pos, _RECORD_SIZE, "company_info_category record")
+            name_b, filename_b, start, length = struct.unpack("<64s80sII", raw)
             pos += _RECORD_SIZE
 
             def _decode(b: bytes) -> str:
@@ -39,6 +40,7 @@ class GetCompanyInfoCategoryCmd(BaseCommand[list[CompanyInfoCategory]]):
                 return raw.decode("gbk", errors="replace")
 
             results.append(CompanyInfoCategory(
+                name=_decode(name_b),
                 filename=_decode(filename_b),
                 start=start,
                 length=length,
@@ -70,7 +72,7 @@ class GetCompanyInfoContentCmd(BaseCommand[str]):
     def parse_response(self, body: bytes) -> str:
         # 前12字节：10字节未知 + 2字节长度
         if len(body) < 12:
-            return ""
-        _, length = struct.unpack_from("<10sH", body, 0)
-        content = body[12 : 12 + length]
+            raise TdxDecodeError("company_info_content body 过短")
+        _, length = unpack_from("<10sH", body, 0, "company_info_content header")
+        content = slice_bytes(body, 12, length, "company_info_content body")
         return content.decode("gbk", errors="replace")

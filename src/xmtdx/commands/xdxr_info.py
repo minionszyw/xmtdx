@@ -6,7 +6,9 @@
 
 import struct
 
+from .._binary import slice_bytes, unpack_from
 from ..codec.datetime_ import get_datetime
+from ..exceptions import TdxDecodeError
 from ..models.enums import Market
 from ..models.finance import XDXR_CATEGORY_NAMES, XdxrRecord
 from .base import BaseCommand
@@ -25,10 +27,10 @@ class GetXdxrInfoCmd(BaseCommand[list[XdxrRecord]]):
 
     def parse_response(self, body: bytes) -> list[XdxrRecord]:
         if len(body) < 11:
-            return []
+            raise TdxDecodeError("xdxr_info body 过短")
 
         pos = 9  # 跳过9字节（market+code+未知）
-        (num,) = struct.unpack_from("<H", body, pos)
+        (num,) = unpack_from("<H", body, pos, "xdxr_info header")
         pos += 2
 
         records: list[XdxrRecord] = []
@@ -37,24 +39,24 @@ class GetXdxrInfoCmd(BaseCommand[list[XdxrRecord]]):
             record_start = pos
 
             # Bug #1 修复：从当前 pos 读，而非 body[:7]
-            if pos + 7 > len(body):
-                break
-            market_b, code_b = struct.unpack_from("<B6s", body, pos)
+            market_b, code_b = unpack_from("<B6s", body, pos, "xdxr_info record header")
             pos += 7
+            slice_bytes(body, pos, 1, "xdxr_info record padding")
             pos += 1  # 跳过1个未知字节
 
             year, month, day, _hour, _min, pos = get_datetime(9, body, pos)
-            (category,) = struct.unpack_from("<B", body, pos)
+            (category,) = unpack_from("<B", body, pos, "xdxr_info category")
             pos += 1
 
-            if pos + 16 > len(body):
-                break
-
-            chunk = body[pos : pos + 16]
+            chunk = slice_bytes(body, pos, 16, "xdxr_info record body")
             pos += 16
+            try:
+                market = Market(market_b)
+            except ValueError as e:
+                raise TdxDecodeError(f"xdxr_info 非法 market 值: {market_b}") from e
 
             rec = XdxrRecord(
-                market=Market(market_b),
+                market=market,
                 code=code_b.decode("utf-8").rstrip("\x00"),
                 year=year,
                 month=month,

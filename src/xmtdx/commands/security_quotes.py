@@ -5,8 +5,10 @@
 
 import struct
 
+from .._binary import unpack_from
 from ..codec.price import get_price
 from ..codec.volume import get_volume
+from ..exceptions import TdxDecodeError
 from ..models.enums import Market
 from ..models.quote import SecurityQuote
 from .base import BaseCommand
@@ -70,7 +72,7 @@ class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
         pos = 0
         # pytdx 跳过前2字节（b1 cb 魔数）
         pos += 2
-        (num,) = struct.unpack_from("<H", body, pos)
+        (num,) = unpack_from("<H", body, pos, "security_quotes header")
         pos += 2
 
         results: list[SecurityQuote] = []
@@ -78,7 +80,12 @@ class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
         for _ in range(num):
             record_start = pos
 
-            market_b, code_b, active1 = struct.unpack_from("<B6sH", body, pos)
+            market_b, code_b, active1 = unpack_from(
+                "<B6sH",
+                body,
+                pos,
+                "security_quotes record header",
+            )
             pos += 9
 
             price_raw, pos = get_price(body, pos)
@@ -95,7 +102,6 @@ class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
             vol, pos = get_price(body, pos)
             cur_vol, pos = get_price(body, pos)
 
-            amount_raw, = struct.unpack_from("<I", body, pos)
             amount, _ = get_volume(body, pos)
             pos += 4
 
@@ -132,20 +138,29 @@ class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
             av5, pos = get_price(body, pos)
 
             # 尾部：2字节 H + 4个 get_price + 2字节 h + 2字节 H
-            (unknown_4,) = struct.unpack_from("<H", body, pos)
+            (unknown_4,) = unpack_from("<H", body, pos, "security_quotes tail flag")
             pos += 2
             unknown_5, pos = get_price(body, pos)
             unknown_6, pos = get_price(body, pos)
             unknown_7, pos = get_price(body, pos)
             unknown_8, pos = get_price(body, pos)
-            rise_speed_raw, active2 = struct.unpack_from("<hH", body, pos)
+            rise_speed_raw, active2 = unpack_from(
+                "<hH",
+                body,
+                pos,
+                "security_quotes tail",
+            )
             pos += 4
 
             p = price_raw / 100.0
+            try:
+                market = Market(market_b)
+            except ValueError as e:
+                raise TdxDecodeError(f"security_quotes 非法 market 值: {market_b}") from e
 
             results.append(
                 SecurityQuote(
-                    market=Market(market_b),
+                    market=market,
                     code=code_b.decode("utf-8").rstrip("\x00"),
                     price=p,
                     pre_close=(price_raw + last_close_diff) / 100.0,

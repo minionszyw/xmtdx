@@ -2,6 +2,7 @@
 
 import struct
 
+from .._binary import unpack_from
 from ..codec.datetime_ import get_datetime
 from ..codec.price import get_price
 from ..codec.volume import get_volume
@@ -53,7 +54,7 @@ class GetSecurityBarsCmd(BaseCommand[list[SecurityBar]]):
         )
 
     def parse_response(self, body: bytes) -> list[SecurityBar]:
-        (ret_count,) = struct.unpack_from("<H", body, 0)
+        (ret_count,) = unpack_from("<H", body, 0, "security_bars header")
         pos = 2
         bars: list[SecurityBar] = []
         pre_diff_base = 0

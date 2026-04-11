@@ -2,6 +2,8 @@
 
 import struct
 
+from .._binary import slice_bytes, unpack_from
+from ..exceptions import TdxDecodeError
 from ..models.enums import Market
 from ..models.finance import FinanceInfo
 from .base import BaseCommand
@@ -24,10 +26,10 @@ class GetFinanceInfoCmd(BaseCommand[FinanceInfo]):
 
     def parse_response(self, body: bytes) -> FinanceInfo:
         pos = 2  # 跳过前2字节（记录数）
-        market_b, code_b = struct.unpack_from("<B6s", body, pos)
+        market_b, code_b = unpack_from("<B6s", body, pos, "finance_info header")
         pos += 7
 
-        fields = struct.unpack_from(_FIN_FMT, body, pos)
+        fields = struct.unpack(_FIN_FMT, slice_bytes(body, pos, _FIN_SIZE, "finance_info body"))
         (
             liutong_guben, province, industry, updated_date, ipo_date,
             zong_guben, guojia_gu, faqiren_faren_gu, faren_gu, b_gu, h_gu, zhigong_gu,
@@ -41,9 +43,13 @@ class GetFinanceInfoCmd(BaseCommand[FinanceInfo]):
         ) = fields
 
         _SCALE = 10000.0  # 财务数据单位：万元/万股
+        try:
+            market = Market(market_b)
+        except ValueError as e:
+            raise TdxDecodeError(f"finance_info 非法 market 值: {market_b}") from e
 
         return FinanceInfo(
-            market=Market(market_b),
+            market=market,
             code=code_b.decode("utf-8").rstrip("\x00"),
             liutong_guben=liutong_guben * _SCALE,
             zong_guben=zong_guben * _SCALE,
@@ -80,5 +86,5 @@ class GetFinanceInfoCmd(BaseCommand[FinanceInfo]):
             weifen_lirun=weifen_lirun * _SCALE,
             meigujing_zichan=meigujing_zichan,
             reserve2=reserve2,
-            _raw=body,
+            _raw=body[pos : pos + _FIN_SIZE],
         )

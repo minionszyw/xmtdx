@@ -7,7 +7,8 @@
 日线及以上（其余 category）：4 字节 YYYYMMDD 整数
 """
 
-import struct
+
+from .._binary import unpack_from
 
 
 def get_datetime_minute(
@@ -18,7 +19,7 @@ def get_datetime_minute(
     Returns:
         (year, month, day, hour, minute, new_pos)
     """
-    zipday, tminutes = struct.unpack_from("<HH", data, pos)
+    zipday, tminutes = unpack_from("<HH", data, pos, "minute datetime")
     year = (zipday >> 11) + 2004
     month = (zipday % 2048) // 100
     day = (zipday % 2048) % 100
@@ -35,7 +36,7 @@ def get_datetime_day(
     Returns:
         (year, month, day, new_pos)
     """
-    (zipday,) = struct.unpack_from("<I", data, pos)
+    (zipday,) = unpack_from("<I", data, pos, "day datetime")
     year = zipday // 10000
     month = (zipday % 10000) // 100
     day = zipday % 100
@@ -64,5 +65,5 @@ def get_time(data: bytes | bytearray, pos: int) -> tuple[int, int, int]:
     Returns:
         (hour, minute, new_pos)
     """
-    (tminutes,) = struct.unpack_from("<H", data, pos)
+    (tminutes,) = unpack_from("<H", data, pos, "trade time")
     return tminutes // 60, tminutes % 60, pos + 2

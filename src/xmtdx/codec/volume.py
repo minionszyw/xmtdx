@@ -9,7 +9,8 @@
 警告：此函数专为成交量设计，不可用于价格字段（pytdx Bug #3）。
 """
 
-import struct
+
+from .._binary import unpack_from
 
 
 def get_volume(data: bytes | bytearray, pos: int) -> tuple[float, int]:
@@ -18,7 +19,7 @@ def get_volume(data: bytes | bytearray, pos: int) -> tuple[float, int]:
     Returns:
         (volume_float, new_pos)
     """
-    (ivol,) = struct.unpack_from("<I", data, pos)
+    (ivol,) = unpack_from("<I", data, pos, "volume")
     return _decode_volume(ivol), pos + 4
 
 

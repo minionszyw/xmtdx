@@ -35,18 +35,28 @@ class SecurityQuote:
     active2: int
 
     # 买盘五档
-    bid1: float;  bid_vol1: float
-    bid2: float;  bid_vol2: float
-    bid3: float;  bid_vol3: float
-    bid4: float;  bid_vol4: float
-    bid5: float;  bid_vol5: float
+    bid1: float
+    bid_vol1: float
+    bid2: float
+    bid_vol2: float
+    bid3: float
+    bid_vol3: float
+    bid4: float
+    bid_vol4: float
+    bid5: float
+    bid_vol5: float
 
     # 卖盘五档
-    ask1: float;  ask_vol1: float
-    ask2: float;  ask_vol2: float
-    ask3: float;  ask_vol3: float
-    ask4: float;  ask_vol4: float
-    ask5: float;  ask_vol5: float
+    ask1: float
+    ask_vol1: float
+    ask2: float
+    ask_vol2: float
+    ask3: float
+    ask_vol3: float
+    ask4: float
+    ask_vol4: float
+    ask5: float
+    ask_vol5: float
 
     # 已确认含义
     rise_speed: float  # 涨速（原 reversed_bytes9 / 100）

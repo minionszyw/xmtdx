@@ -1,5 +1,6 @@
 """高层行情 API：TdxClient（同步）和 AsyncTdxClient（asyncio）。"""
 
+import asyncio
 from types import TracebackType
 from typing import TypeVar
 
@@ -243,6 +244,9 @@ class AsyncTdxClient:
 
         async with AsyncTdxClient("180.153.18.170") as c:
             bars = await c.get_security_bars(Market.SH, "600000", KlineCategory.DAY, 0, 100)
+
+    注意：
+        单个 AsyncTdxClient 仅维护一条 TCP 连接；并发调用会在连接内串行执行。
     """
 
     def __init__(
@@ -250,8 +254,37 @@ class AsyncTdxClient:
         host: str = KNOWN_HOSTS[0],
         port: int = _DEFAULT_PORT,
         timeout: float = 15.0,
+        auto_reconnect: bool = True,
     ) -> None:
+        self._host = host
+        self._port = port
+        self._timeout = timeout
+        self._auto_reconnect = auto_reconnect
         self._conn = AsyncTdxConnection(host, port, timeout)
+        self._execute_lock = asyncio.Lock()
+
+    @classmethod
+    def from_best_host(
+        cls,
+        hosts: list[str] = KNOWN_HOSTS,
+        port: int = _DEFAULT_PORT,
+        timeout: float = 15.0,
+        ping_timeout: float = 5.0,
+        auto_reconnect: bool = True,
+    ) -> "AsyncTdxClient":
+        """测量 hosts 中所有服务器延迟，选最低延迟的建立连接。"""
+        ranked = ping_all(hosts, port, ping_timeout)
+        best = ranked[0][0] if ranked else hosts[0]
+        return cls(best, port, timeout, auto_reconnect)
+
+    @staticmethod
+    def ping_all(
+        hosts: list[str] = KNOWN_HOSTS,
+        port: int = _DEFAULT_PORT,
+        timeout: float = 5.0,
+    ) -> list[tuple[str, float]]:
+        """测量多台服务器延迟，返回按延迟排序的 (host, seconds) 列表。"""
+        return ping_all(hosts, port, timeout)
 
     async def connect(self) -> None:
         await self._conn.connect()
@@ -271,16 +304,29 @@ class AsyncTdxClient:
     ) -> None:
         await self.close()
 
+    async def _execute(self, cmd: "BaseCommand[_T]") -> _T:
+        """执行命令；断线时尝试重连一次再重试（若 auto_reconnect=True）。"""
+        async with self._execute_lock:
+            try:
+                return await self._conn.execute(cmd)
+            except TdxConnectionError:
+                if not self._auto_reconnect:
+                    raise
+                await self._conn.close()
+                self._conn = AsyncTdxConnection(self._host, self._port, self._timeout)
+                await self._conn.connect()
+                return await self._conn.execute(cmd)
+
     async def get_security_count(self, market: Market) -> int:
-        return await self._conn.execute(GetSecurityCountCmd(market))
+        return await self._execute(GetSecurityCountCmd(market))
 
     async def get_security_list(self, market: Market, start: int) -> list[SecurityInfo]:
-        return await self._conn.execute(GetSecurityListCmd(market, start))
+        return await self._execute(GetSecurityListCmd(market, start))
 
     async def get_security_quotes(
         self, stocks: list[tuple[Market, str]]
     ) -> list[SecurityQuote]:
-        return await self._conn.execute(GetSecurityQuotesCmd(stocks))
+        return await self._execute(GetSecurityQuotesCmd(stocks))
 
     async def get_security_bars(
         self,
@@ -290,7 +336,9 @@ class AsyncTdxClient:
         start: int,
         count: int = 800,
     ) -> list[SecurityBar]:
-        return await self._conn.execute(GetSecurityBarsCmd(market, code, category, start, count))
+        return await self._execute(
+            GetSecurityBarsCmd(market, code, category, start, count)
+        )
 
     async def get_index_bars(
         self,
@@ -300,42 +348,42 @@ class AsyncTdxClient:
         start: int,
         count: int = 800,
     ) -> list[SecurityBar]:
-        return await self._conn.execute(GetIndexBarsCmd(market, code, category, start, count))
+        return await self._execute(GetIndexBarsCmd(market, code, category, start, count))
 
     async def get_minute_time_data(self, market: Market, code: str) -> list[MinuteBar]:
-        return await self._conn.execute(GetMinuteTimeDataCmd(market, code))
+        return await self._execute(GetMinuteTimeDataCmd(market, code))
 
     async def get_history_minute_time_data(
         self, market: Market, code: str, date: int
     ) -> list[MinuteBar]:
-        return await self._conn.execute(GetHistoryMinuteTimeDataCmd(market, code, date))
+        return await self._execute(GetHistoryMinuteTimeDataCmd(market, code, date))
 
     async def get_transaction_data(
         self, market: Market, code: str, start: int, count: int = 800
     ) -> list[TransactionRecord]:
-        return await self._conn.execute(GetTransactionDataCmd(market, code, start, count))
+        return await self._execute(GetTransactionDataCmd(market, code, start, count))
 
     async def get_history_transaction_data(
         self, market: Market, code: str, date: int, start: int, count: int = 800
     ) -> list[TransactionRecord]:
-        return await self._conn.execute(
+        return await self._execute(
             GetHistoryTransactionDataCmd(market, code, date, start, count)
         )
 
     async def get_xdxr_info(self, market: Market, code: str) -> list[XdxrRecord]:
-        return await self._conn.execute(GetXdxrInfoCmd(market, code))
+        return await self._execute(GetXdxrInfoCmd(market, code))
 
     async def get_finance_info(self, market: Market, code: str) -> FinanceInfo:
-        return await self._conn.execute(GetFinanceInfoCmd(market, code))
+        return await self._execute(GetFinanceInfoCmd(market, code))
 
     async def get_company_info_category(
         self, market: Market, code: str
     ) -> list[CompanyInfoCategory]:
-        return await self._conn.execute(GetCompanyInfoCategoryCmd(market, code))
+        return await self._execute(GetCompanyInfoCategoryCmd(market, code))
 
     async def get_company_info_content(
         self, market: Market, code: str, filename: str, offset: int, length: int
     ) -> str:
-        return await self._conn.execute(
+        return await self._execute(
             GetCompanyInfoContentCmd(market, code, filename, offset, length)
         )

@@ -2,6 +2,7 @@
 
 import struct
 
+from .._binary import unpack_from
 from ..models.enums import Market
 from .base import BaseCommand
 
@@ -20,5 +21,5 @@ class GetSecurityCountCmd(BaseCommand[int]):
         return header + struct.pack("<H", int(self.market)) + b"\x75\xc7\x33\x01"
 
     def parse_response(self, body: bytes) -> int:
-        (count,) = struct.unpack_from("<H", body, 0)
-        return count
+        (count,) = unpack_from("<H", body, 0, "security_count")
+        return int(count)

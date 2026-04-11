@@ -5,6 +5,7 @@
 
 import struct
 
+from .._binary import unpack_from
 from ..codec.datetime_ import get_time
 from ..codec.price import get_price
 from ..models.enums import Market
@@ -57,7 +58,7 @@ class GetHistoryTransactionDataCmd(BaseCommand[list[TransactionRecord]]):
 
 def _parse_transaction_body(body: bytes) -> list[TransactionRecord]:
     """当日逐笔：time + price + vol + num_orders + buyorsell + unknown"""
-    (num,) = struct.unpack_from("<H", body, 0)
+    (num,) = unpack_from("<H", body, 0, "transaction header")
     pos = 2
     last_price = 0
     records: list[TransactionRecord] = []
@@ -82,7 +83,7 @@ def _parse_transaction_body(body: bytes) -> list[TransactionRecord]:
 
 def _parse_history_transaction_body(body: bytes) -> list[TransactionRecord]:
     """历史逐笔：num(2) + skip(4) + [time + price + vol + buyorsell + unknown]"""
-    (num,) = struct.unpack_from("<H", body, 0)
+    (num,) = unpack_from("<H", body, 0, "history_transaction header")
     pos = 6  # 2(num) + 4(skip)
     last_price = 0
     records: list[TransactionRecord] = []
