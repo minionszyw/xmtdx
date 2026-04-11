@@ -22,6 +22,7 @@ asyncio 版本::
 
 from .client import AsyncTdxClient, TdxClient
 from .exceptions import TdxCommandError, TdxConnectionError, TdxDecodeError, TdxError
+from .transport.sync import KNOWN_HOSTS, ping_all
 from .models import (
     XDXR_CATEGORY_NAMES,
     CompanyInfoCategory,
@@ -58,6 +59,9 @@ __all__ = [
     "TdxConnectionError",
     "TdxDecodeError",
     "TdxCommandError",
+    # 工具
+    "ping_all",
+    "KNOWN_HOSTS",
 ]
 
 __version__ = "0.1.0"

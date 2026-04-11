@@ -1,0 +1,9 @@
+{
+  "num_records": 10,
+  "first": {
+    "hour": 14,
+    "minute": 59,
+    "price": 9.9,
+    "vol": 0
+  }
+}

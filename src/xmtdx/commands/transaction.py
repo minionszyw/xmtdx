@@ -28,7 +28,7 @@ class GetTransactionDataCmd(BaseCommand[list[TransactionRecord]]):
 
 
     def parse_response(self, body: bytes) -> list[TransactionRecord]:
-        return _parse_transaction_body(body, skip=2)
+        return _parse_transaction_body(body)
 
 
 class GetHistoryTransactionDataCmd(BaseCommand[list[TransactionRecord]]):

@@ -1,7 +1,9 @@
 """高层行情 API：TdxClient（同步）和 AsyncTdxClient（asyncio）。"""
 
 from types import TracebackType
+from typing import TypeVar
 
+from .commands.base import BaseCommand
 from .commands.company_info import GetCompanyInfoCategoryCmd, GetCompanyInfoContentCmd
 from .commands.finance_info import GetFinanceInfoCmd
 from .commands.minute_time import GetHistoryMinuteTimeDataCmd, GetMinuteTimeDataCmd
@@ -11,6 +13,7 @@ from .commands.security_list import GetSecurityListCmd
 from .commands.security_quotes import GetSecurityQuotesCmd
 from .commands.transaction import GetHistoryTransactionDataCmd, GetTransactionDataCmd
 from .commands.xdxr_info import GetXdxrInfoCmd
+from .exceptions import TdxConnectionError
 from .models.bar import SecurityBar
 from .models.enums import KlineCategory, Market
 from .models.finance import CompanyInfoCategory, FinanceInfo, XdxrRecord
@@ -18,10 +21,10 @@ from .models.quote import SecurityQuote
 from .models.security import SecurityInfo
 from .models.timeseries import MinuteBar, TransactionRecord
 from .transport.async_ import AsyncTdxConnection
-from .transport.sync import TdxConnection
+from .transport.sync import KNOWN_HOSTS, TdxConnection, ping_all
 
-_DEFAULT_HOST = "180.153.18.170"
 _DEFAULT_PORT = 7709
+_T = TypeVar("_T")
 
 
 # ============================================================
@@ -30,21 +33,65 @@ _DEFAULT_PORT = 7709
 
 
 class TdxClient:
-    """同步通达信行情客户端。
+    """同步通达信行情客户端，支持 IP 优选与断线自动重连。
 
     使用示例::
 
+        # 单台服务器
         with TdxClient("180.153.18.170") as c:
             bars = c.get_security_bars(Market.SH, "600000", KlineCategory.DAY, 0, 100)
+
+        # 自动从候选列表中选延迟最低的服务器
+        with TdxClient.from_best_host() as c:
+            count = c.get_security_count(Market.SH)
     """
 
     def __init__(
         self,
-        host: str = _DEFAULT_HOST,
+        host: str = KNOWN_HOSTS[0],
         port: int = _DEFAULT_PORT,
         timeout: float = 15.0,
+        auto_reconnect: bool = True,
     ) -> None:
+        self._host = host
+        self._port = port
+        self._timeout = timeout
+        self._auto_reconnect = auto_reconnect
         self._conn = TdxConnection(host, port, timeout)
+
+    # ------------------------------------------------------------------ #
+    # 工厂方法：自动优选最低延迟服务器
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def from_best_host(
+        cls,
+        hosts: list[str] = KNOWN_HOSTS,
+        port: int = _DEFAULT_PORT,
+        timeout: float = 15.0,
+        ping_timeout: float = 5.0,
+        auto_reconnect: bool = True,
+    ) -> "TdxClient":
+        """测量 hosts 中所有服务器延迟，选最低延迟的建立连接。
+
+        若所有服务器均不可达，回退到 hosts[0]。
+        """
+        ranked = ping_all(hosts, port, ping_timeout)
+        best = ranked[0][0] if ranked else hosts[0]
+        return cls(best, port, timeout, auto_reconnect)
+
+    @staticmethod
+    def ping_all(
+        hosts: list[str] = KNOWN_HOSTS,
+        port: int = _DEFAULT_PORT,
+        timeout: float = 5.0,
+    ) -> list[tuple[str, float]]:
+        """测量多台服务器延迟，返回按延迟排序的 (host, seconds) 列表。"""
+        return ping_all(hosts, port, timeout)
+
+    # ------------------------------------------------------------------ #
+    # 连接管理
+    # ------------------------------------------------------------------ #
 
     def connect(self) -> None:
         self._conn.connect()
@@ -65,22 +112,39 @@ class TdxClient:
         self.close()
 
     # ------------------------------------------------------------------ #
+    # 内部执行：含自动重连
+    # ------------------------------------------------------------------ #
+
+    def _execute(self, cmd: "BaseCommand[_T]") -> _T:
+        """执行命令；断线时尝试重连一次再重试（若 auto_reconnect=True）。"""
+        try:
+            return self._conn.execute(cmd)
+        except TdxConnectionError:
+            if not self._auto_reconnect:
+                raise
+            # 重连后重试一次
+            self._conn.close()
+            self._conn = TdxConnection(self._host, self._port, self._timeout)
+            self._conn.connect()
+            return self._conn.execute(cmd)
+
+    # ------------------------------------------------------------------ #
     # 市场信息
     # ------------------------------------------------------------------ #
 
     def get_security_count(self, market: Market) -> int:
         """获取市场证券总数。"""
-        return self._conn.execute(GetSecurityCountCmd(market))
+        return self._execute(GetSecurityCountCmd(market))
 
     def get_security_list(self, market: Market, start: int) -> list[SecurityInfo]:
         """获取证券列表（每页约1000条，按 start 分页）。"""
-        return self._conn.execute(GetSecurityListCmd(market, start))
+        return self._execute(GetSecurityListCmd(market, start))
 
     def get_security_quotes(
         self, stocks: list[tuple[Market, str]]
     ) -> list[SecurityQuote]:
         """批量获取实时五档行情（最多80只/次）。"""
-        return self._conn.execute(GetSecurityQuotesCmd(stocks))
+        return self._execute(GetSecurityQuotesCmd(stocks))
 
     # ------------------------------------------------------------------ #
     # K 线
@@ -95,7 +159,7 @@ class TdxClient:
         count: int = 800,
     ) -> list[SecurityBar]:
         """获取 K 线数据（最多800条/次，按 start 分页）。"""
-        return self._conn.execute(GetSecurityBarsCmd(market, code, category, start, count))
+        return self._execute(GetSecurityBarsCmd(market, code, category, start, count))
 
     def get_index_bars(
         self,
@@ -106,7 +170,7 @@ class TdxClient:
         count: int = 800,
     ) -> list[SecurityBar]:
         """获取指数 K 线数据。"""
-        return self._conn.execute(GetIndexBarsCmd(market, code, category, start, count))
+        return self._execute(GetIndexBarsCmd(market, code, category, start, count))
 
     # ------------------------------------------------------------------ #
     # 分时
@@ -114,13 +178,13 @@ class TdxClient:
 
     def get_minute_time_data(self, market: Market, code: str) -> list[MinuteBar]:
         """获取今日分时数据（240条）。"""
-        return self._conn.execute(GetMinuteTimeDataCmd(market, code))
+        return self._execute(GetMinuteTimeDataCmd(market, code))
 
     def get_history_minute_time_data(
         self, market: Market, code: str, date: int
     ) -> list[MinuteBar]:
         """获取历史某日分时数据（date: YYYYMMDD）。"""
-        return self._conn.execute(GetHistoryMinuteTimeDataCmd(market, code, date))
+        return self._execute(GetHistoryMinuteTimeDataCmd(market, code, date))
 
     # ------------------------------------------------------------------ #
     # 逐笔成交
@@ -130,13 +194,13 @@ class TdxClient:
         self, market: Market, code: str, start: int, count: int = 800
     ) -> list[TransactionRecord]:
         """获取当日逐笔成交（分页）。"""
-        return self._conn.execute(GetTransactionDataCmd(market, code, start, count))
+        return self._execute(GetTransactionDataCmd(market, code, start, count))
 
     def get_history_transaction_data(
         self, market: Market, code: str, date: int, start: int, count: int = 800
     ) -> list[TransactionRecord]:
         """获取历史逐笔成交（date: YYYYMMDD，分页）。"""
-        return self._conn.execute(
+        return self._execute(
             GetHistoryTransactionDataCmd(market, code, date, start, count)
         )
 
@@ -146,23 +210,23 @@ class TdxClient:
 
     def get_xdxr_info(self, market: Market, code: str) -> list[XdxrRecord]:
         """获取除权除息历史记录。"""
-        return self._conn.execute(GetXdxrInfoCmd(market, code))
+        return self._execute(GetXdxrInfoCmd(market, code))
 
     def get_finance_info(self, market: Market, code: str) -> FinanceInfo:
         """获取最新财务数据。"""
-        return self._conn.execute(GetFinanceInfoCmd(market, code))
+        return self._execute(GetFinanceInfoCmd(market, code))
 
     def get_company_info_category(
         self, market: Market, code: str
     ) -> list[CompanyInfoCategory]:
         """获取公司信息文件目录。"""
-        return self._conn.execute(GetCompanyInfoCategoryCmd(market, code))
+        return self._execute(GetCompanyInfoCategoryCmd(market, code))
 
     def get_company_info_content(
         self, market: Market, code: str, filename: str, offset: int, length: int
     ) -> str:
         """读取公司信息文本。"""
-        return self._conn.execute(
+        return self._execute(
             GetCompanyInfoContentCmd(market, code, filename, offset, length)
         )
 
@@ -183,7 +247,7 @@ class AsyncTdxClient:
 
     def __init__(
         self,
-        host: str = _DEFAULT_HOST,
+        host: str = KNOWN_HOSTS[0],
         port: int = _DEFAULT_PORT,
         timeout: float = 15.0,
     ) -> None:
