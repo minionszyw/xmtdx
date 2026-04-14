@@ -58,12 +58,14 @@ class SecurityQuote:
     ask5: float
     ask_vol5: float
 
-    # 已确认含义
+    # 价格指标
     rise_speed: float  # 涨速（原 reversed_bytes9 / 100）
+    limit_up: float    # 涨停价（由 unknown_2 / 100 转换）
+    limit_down: float  # 跌停价（由 unknown_3 / 100 转换）
 
-    # 未知字段：买卖量之后的两个变长整数
-    unknown_2: int = field(default=0, repr=False)  # 原 reversed_bytes2
-    unknown_3: int = field(default=0, repr=False)  # 原 reversed_bytes3
+    # 未知字段：买卖量之后的两个变长整数（保留供进一步分析）
+    unknown_2: int = field(default=0, repr=False)  # 原始涨停价整数（price_raw + diff）
+    unknown_3: int = field(default=0, repr=False)  # 原始跌停价整数（price_raw + diff）
 
     # 未知字段：尾部四个变长整数
     unknown_5: int = field(default=0, repr=False)  # 原 reversed_bytes5

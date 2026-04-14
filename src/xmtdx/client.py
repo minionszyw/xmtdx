@@ -8,6 +8,7 @@ from .commands.base import BaseCommand
 from .commands.block_info import GetBlockInfoCmd, GetBlockInfoMetaCmd
 from .commands.company_info import GetCompanyInfoCategoryCmd, GetCompanyInfoContentCmd
 from .commands.finance_info import GetFinanceInfoCmd
+from .commands.report_file import GetReportFileCmd
 from .commands.minute_time import GetHistoryMinuteTimeDataCmd, GetMinuteTimeDataCmd
 from .commands.security_bars import GetIndexBarsCmd, GetSecurityBarsCmd
 from .commands.security_count import GetSecurityCountCmd
@@ -253,6 +254,21 @@ class TdxClient:
             pos += len(chunk)
         return parse_block_dat(bytes(full_data), filename)
 
+    def get_report_file(self, filename: str) -> bytes:
+        """从服务器拉取大文件（如 'base_info.zip'）。"""
+        full_data = bytearray()
+        pos = 0
+        chunk_size = 30000
+        while True:
+            chunk = self._execute(GetReportFileCmd(filename, pos, chunk_size))
+            if not chunk:
+                break
+            full_data.extend(chunk)
+            pos += len(chunk)
+            if len(chunk) < chunk_size:
+                break
+        return bytes(full_data)
+
 
 # ============================================================
 # 异步客户端
@@ -423,3 +439,19 @@ class AsyncTdxClient:
             full_data.extend(chunk)
             pos += len(chunk)
         return parse_block_dat(bytes(full_data), filename)
+
+    async def get_report_file(self, filename: str) -> bytes:
+        """从服务器拉取大文件。"""
+        full_data = bytearray()
+        pos = 0
+        chunk_size = 30000
+        while True:
+            chunk = await self._execute(GetReportFileCmd(filename, pos, chunk_size))
+            if not chunk:
+                break
+            full_data.extend(chunk)
+            pos += len(chunk)
+            if len(chunk) < chunk_size:
+                break
+        return bytes(full_data)
+

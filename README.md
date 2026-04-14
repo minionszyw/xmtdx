@@ -105,6 +105,7 @@ client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
 | `get_company_info_category(market, code)` | 公司信息文件目录 |
 | `get_company_info_content(market, code, filename, offset, length)` | 公司信息文本 |
 | `get_block_info(filename)` | 板块信息（行业、概念、风格等） |
+| `get_report_file(filename)` | 批量拉取大文件（如 'base_info.zip', 'gpcw.txt'） |
 
 `AsyncTdxClient` 提供与同步版对应的查询方法与高可用入口，均为 `async def`。
 单个 `AsyncTdxClient` 仅维护一条 TCP 连接；并发调用会在连接内串行执行。
@@ -135,8 +136,8 @@ market  code  price  pre_close  open  high  low
 vol  cur_vol  amount  s_vol  b_vol
 bid1..bid5  bid_vol1..bid_vol5
 ask1..ask5  ask_vol1..ask_vol5
-rise_speed  server_time
-unknown_2  unknown_3  unknown_5..unknown_8   # 待解字段，已确认 ≠ 涨停价
+rise_speed  limit_up  limit_down  server_time
+unknown_2..unknown_3  unknown_5..unknown_8
 _raw
 ```
 
@@ -201,6 +202,7 @@ name  category  count  codes
 | 4 | `transaction` | 最后一个字段被 `_` 丢弃 | 保留为 `unknown_last` |
 | 5 | `minute_time` | `reversed1` 字段被丢弃 | 保留为 `unknown_1` |
 | 6 | `xdxr_info` | 股本字段用 `float(uint32)` 直解，差约 374 倍 | 改用 `_decode_volume`（通达信自定义浮点），单位万股，与 `FinanceInfo` 完全吻合 |
+| 7 | `security_quotes` | 涨停/跌停价映射错误或缺失 | 解析 `unknown_2/3` 为绝对价格字段 `limit_up/down` |
 
 ## 架构
 
