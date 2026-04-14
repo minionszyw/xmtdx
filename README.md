@@ -95,6 +95,7 @@ client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
 |------|------|
 | `get_security_count(market)` | 市场证券总数 |
 | `get_security_list(market, start)` | 证券列表（每页 ~1000 条） |
+| `get_security_list_all()` | 全市场 A 股列表（自动挂载行业信息） |
 | `get_security_quotes([(market, code), ...])` | 批量实时五档行情（最多 80 只/次） |
 | `get_security_bars(market, code, category, start, count=800)` | K 线（股票） |
 | `get_index_bars(market, code, category, start, count=800)` | K 线（指数） |
@@ -164,6 +165,7 @@ _raw
 
 ```
 market  code  name  volunit  decimal_point  pre_close
+industry_tdx  industry_sw
 ```
 
 ### XdxrRecord（除权除息）

@@ -17,6 +17,7 @@ from .commands.security_quotes import GetSecurityQuotesCmd
 from .commands.transaction import GetHistoryTransactionDataCmd, GetTransactionDataCmd
 from .commands.xdxr_info import GetXdxrInfoCmd
 from .codec.block import parse_block_dat
+from .codec.industry import parse_tdxhy_cfg
 from .exceptions import TdxConnectionError
 from .models.bar import SecurityBar
 from .models.enums import KlineCategory, Market
@@ -144,6 +145,41 @@ class TdxClient:
     def get_security_list(self, market: Market, start: int) -> list[SecurityInfo]:
         """获取证券列表（每页约1000条，按 start 分页）。"""
         return self._execute(GetSecurityListCmd(market, start))
+
+    def get_security_list_all(self) -> list[SecurityInfo]:
+        """获取全市场（沪深 A 股）完整证券列表，并自动挂载行业信息。"""
+        # 1. 尝试获取行业配置
+        industry_map = {}
+        try:
+            cfg_data = self.get_report_file("tdxhy.cfg")
+            if cfg_data:
+                industry_map = parse_tdxhy_cfg(cfg_data)
+        except Exception:
+            pass
+
+        all_stocks: list[SecurityInfo] = []
+        for market in [Market.SH, Market.SZ]:
+            count = self.get_security_count(market)
+            for start in range(0, count, 1000):
+                stocks = self.get_security_list(market, start)
+                for s in stocks:
+                    # 精确 A 股过滤规则
+                    is_a_share = False
+                    if market == Market.SH:
+                        # 沪市 A 股：60xxxx, 68xxxx
+                        if s.code.startswith(("60", "68")):
+                            is_a_share = True
+                    elif market == Market.SZ:
+                        # 深市 A 股：00xxxx (主板), 30xxxx (创业板)
+                        if s.code.startswith(("00", "30")):
+                            is_a_share = True
+                    
+                    if is_a_share:
+                        # 挂载行业信息
+                        if s.code in industry_map:
+                            s.industry_tdx, s.industry_sw = industry_map[s.code]
+                        all_stocks.append(s)
+        return all_stocks
 
     def get_security_quotes(
         self, stocks: list[tuple[Market, str]]
@@ -415,6 +451,36 @@ class AsyncTdxClient:
 
     async def get_security_list(self, market: Market, start: int) -> list[SecurityInfo]:
         return await self._execute(GetSecurityListCmd(market, start))
+
+    async def get_security_list_all(self) -> list[SecurityInfo]:
+        """获取全市场完整证券列表，并自动挂载行业信息。"""
+        industry_map = {}
+        try:
+            cfg_data = await self.get_report_file("tdxhy.cfg")
+            if cfg_data:
+                industry_map = parse_tdxhy_cfg(cfg_data)
+        except Exception:
+            pass
+
+        all_stocks: list[SecurityInfo] = []
+        for market in [Market.SH, Market.SZ]:
+            count = await self.get_security_count(market)
+            for start in range(0, count, 1000):
+                stocks = await self.get_security_list(market, start)
+                for s in stocks:
+                    is_a_share = False
+                    if market == Market.SH:
+                        if s.code.startswith(("60", "68")):
+                            is_a_share = True
+                    elif market == Market.SZ:
+                        if s.code.startswith(("00", "30")):
+                            is_a_share = True
+                    
+                    if is_a_share:
+                        if s.code in industry_map:
+                            s.industry_tdx, s.industry_sw = industry_map[s.code]
+                        all_stocks.append(s)
+        return all_stocks
 
     async def get_security_quotes(
         self, stocks: list[tuple[Market, str]]
