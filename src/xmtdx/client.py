@@ -293,13 +293,16 @@ class AsyncTdxClient:
         port: int = _DEFAULT_PORT,
         timeout: float = 15.0,
         auto_reconnect: bool = True,
+        heartbeat_interval: float = 60.0,
     ) -> None:
         self._host = host
         self._port = port
         self._timeout = timeout
         self._auto_reconnect = auto_reconnect
+        self._heartbeat_interval = heartbeat_interval
         self._conn = AsyncTdxConnection(host, port, timeout)
         self._execute_lock = asyncio.Lock()
+        self._heartbeat_task: asyncio.Task[None] | None = None
 
     @classmethod
     def from_best_host(
@@ -309,11 +312,12 @@ class AsyncTdxClient:
         timeout: float = 15.0,
         ping_timeout: float = 5.0,
         auto_reconnect: bool = True,
+        heartbeat_interval: float = 60.0,
     ) -> "AsyncTdxClient":
         """测量 hosts 中所有服务器延迟，选最低延迟的建立连接。"""
         ranked = ping_all(hosts, port, ping_timeout)
         best = ranked[0][0] if ranked else hosts[0]
-        return cls(best, port, timeout, auto_reconnect)
+        return cls(best, port, timeout, auto_reconnect, heartbeat_interval)
 
     @staticmethod
     def ping_all(
@@ -326,8 +330,10 @@ class AsyncTdxClient:
 
     async def connect(self) -> None:
         await self._conn.connect()
+        self._start_heartbeat()
 
     async def close(self) -> None:
+        await self._stop_heartbeat()
         await self._conn.close()
 
     async def __aenter__(self) -> "AsyncTdxClient":
@@ -341,6 +347,38 @@ class AsyncTdxClient:
         exc_tb: TracebackType | None,
     ) -> None:
         await self.close()
+
+    def _start_heartbeat(self) -> None:
+        """启动后台心跳任务。"""
+        if self._heartbeat_interval <= 0:
+            return
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def _stop_heartbeat(self) -> None:
+        """停止并清理心跳任务。"""
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
+
+    async def _heartbeat_loop(self) -> None:
+        """心跳循环：定期发送轻量级请求保活。"""
+        while True:
+            try:
+                await asyncio.sleep(self._heartbeat_interval)
+                # 使用 get_security_count 作为心跳包
+                await self.get_security_count(Market.SH)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                # 心跳失败通常意味着连接已断开
+                # 下一次正常的业务请求或下一次心跳会通过 _execute 触发重连
+                pass
 
     async def _execute(self, cmd: "BaseCommand[_T]") -> _T:
         """执行命令；断线时尝试重连一次再重试（若 auto_reconnect=True）。"""
