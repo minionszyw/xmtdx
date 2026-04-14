@@ -126,3 +126,13 @@ class CompanyInfoCategory:
     filename: str = ""  # 文件名（如 '600000.txt'）
     start: int = 0      # 内容起始偏移
     length: int = 0     # 内容长度（字节）
+
+
+@dataclass
+class TdxBlock:
+    """通达信板块信息（行业、概念、风格等）"""
+
+    name: str           # 板块名称（如“房地产”）
+    category: int       # 板块分类（0=行业, 1=地域, 2=概念, 3=风格, 等）
+    count: int          # 板块包含股票数量
+    codes: list[str]    # 股票代码列表（6位数字代码）

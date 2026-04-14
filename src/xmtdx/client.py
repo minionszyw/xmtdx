@@ -5,6 +5,7 @@ from types import TracebackType
 from typing import TypeVar
 
 from .commands.base import BaseCommand
+from .commands.block_info import GetBlockInfoCmd, GetBlockInfoMetaCmd
 from .commands.company_info import GetCompanyInfoCategoryCmd, GetCompanyInfoContentCmd
 from .commands.finance_info import GetFinanceInfoCmd
 from .commands.minute_time import GetHistoryMinuteTimeDataCmd, GetMinuteTimeDataCmd
@@ -14,10 +15,11 @@ from .commands.security_list import GetSecurityListCmd
 from .commands.security_quotes import GetSecurityQuotesCmd
 from .commands.transaction import GetHistoryTransactionDataCmd, GetTransactionDataCmd
 from .commands.xdxr_info import GetXdxrInfoCmd
+from .codec.block import parse_block_dat
 from .exceptions import TdxConnectionError
 from .models.bar import SecurityBar
 from .models.enums import KlineCategory, Market
-from .models.finance import CompanyInfoCategory, FinanceInfo, XdxrRecord
+from .models.finance import CompanyInfoCategory, FinanceInfo, TdxBlock, XdxrRecord
 from .models.quote import SecurityQuote
 from .models.security import SecurityInfo
 from .models.timeseries import MinuteBar, TransactionRecord
@@ -231,6 +233,26 @@ class TdxClient:
             GetCompanyInfoContentCmd(market, code, filename, offset, length)
         )
 
+    def get_block_info(self, filename: str) -> list[TdxBlock]:
+        """获取并解析板块文件（行业、概念、风格等）。
+
+        常用文件名：
+          'block_zs.dat'  - 行业/指数板块
+          'block_gn.dat'  - 概念板块
+          'block_fg.dat'  - 风格板块
+        """
+        size, _hash = self._execute(GetBlockInfoMetaCmd(filename))
+        full_data = bytearray()
+        pos = 0
+        chunk_size = 30000
+        while pos < size:
+            chunk = self._execute(GetBlockInfoCmd(filename, pos, chunk_size))
+            if not chunk:
+                break
+            full_data.extend(chunk)
+            pos += len(chunk)
+        return parse_block_dat(bytes(full_data), filename)
+
 
 # ============================================================
 # 异步客户端
@@ -387,3 +409,17 @@ class AsyncTdxClient:
         return await self._execute(
             GetCompanyInfoContentCmd(market, code, filename, offset, length)
         )
+
+    async def get_block_info(self, filename: str) -> list[TdxBlock]:
+        """获取并解析板块文件（行业、概念、风格等）。"""
+        size, _hash = await self._execute(GetBlockInfoMetaCmd(filename))
+        full_data = bytearray()
+        pos = 0
+        chunk_size = 30000
+        while pos < size:
+            chunk = await self._execute(GetBlockInfoCmd(filename, pos, chunk_size))
+            if not chunk:
+                break
+            full_data.extend(chunk)
+            pos += len(chunk)
+        return parse_block_dat(bytes(full_data), filename)
