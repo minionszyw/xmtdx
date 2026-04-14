@@ -34,11 +34,11 @@ class XdxrRecord:
     xingquanjia: float | None = None  # 行权价
     fenshu: float | None = None       # 分数
 
-    # category in [2..10]（股本变动类）
-    panqian_liutong: float | None = None   # 盘前流通股本
-    panhou_liutong: float | None = None    # 盘后流通股本
-    qian_zongguben: float | None = None    # 前总股本
-    hou_zongguben: float | None = None     # 后总股本
+    # category in [2..10]（股本变动类，单位：万股）
+    panqian_liutong: float | None = None   # 盘前流通股本（万股）
+    panhou_liutong: float | None = None    # 盘后流通股本（万股）
+    qian_zongguben: float | None = None    # 前总股本（万股）
+    hou_zongguben: float | None = None     # 后总股本（万股）
 
     _raw: bytes = field(default=b"", repr=False, compare=False)
 

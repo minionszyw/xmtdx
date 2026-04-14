@@ -8,6 +8,7 @@ import struct
 
 from .._binary import slice_bytes, unpack_from
 from ..codec.datetime_ import get_datetime
+from ..codec.volume import _decode_volume
 from ..exceptions import TdxDecodeError
 from ..models.enums import Market
 from ..models.finance import XDXR_CATEGORY_NAMES, XdxrRecord
@@ -93,9 +94,9 @@ class GetXdxrInfoCmd(BaseCommand[list[XdxrRecord]]):
 
 
 def _decode_share_count(raw: int) -> float:
-    """股本数量解码（uint32 → 股数）。
+    """股本数量解码（通达信自定义4字节浮点 → 万股）。
 
-    pytdx 使用 get_volume 但会产生错误结果（xdxr Bug #1 注释）。
-    目前保持与服务器原始整数一致，待进一步逆向确认正确解码方式。
+    xdxr_info 的股本字段与成交量字段使用相同的自定义浮点编码，
+    解码结果单位为万股，与 FinanceInfo.zong_guben / 10000 一致。
     """
-    return float(raw)
+    return _decode_volume(raw)

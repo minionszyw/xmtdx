@@ -166,8 +166,8 @@ market  code  name  volunit  decimal_point  pre_close
 market  code  year  month  day  category  name
 fenhong  peigujia  songzhuangu  peigu  suogu
 xingquanjia  fenshu
-panqian_liutong  panhou_liutong
-qian_zongguben  hou_zongguben
+panqian_liutong  panhou_liutong      # 单位：万股
+qian_zongguben  hou_zongguben        # 单位：万股
 _raw
 ```
 
@@ -190,6 +190,7 @@ name  filename  start  length
 | 3 | `security_list` | `pre_close` 错用成交量解码函数 | 改用价格解码 |
 | 4 | `transaction` | 最后一个字段被 `_` 丢弃 | 保留为 `unknown_last` |
 | 5 | `minute_time` | `reversed1` 字段被丢弃 | 保留为 `unknown_1` |
+| 6 | `xdxr_info` | 股本字段用 `float(uint32)` 直解，差约 374 倍 | 改用 `_decode_volume`（通达信自定义浮点），单位万股，与 `FinanceInfo` 完全吻合 |
 
 ## 架构
 
