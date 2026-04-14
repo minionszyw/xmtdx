@@ -56,6 +56,33 @@ async def main():
 asyncio.run(main())
 ```
 
+### 高可用工具
+
+```python
+from xmtdx import ping_all, KNOWN_HOSTS
+
+# 并发测速，返回按延迟排序的 [(host, seconds), ...]
+results = ping_all(KNOWN_HOSTS, timeout=5.0)
+for host, ms in results:
+    print(f"{host}  {ms*1000:.0f} ms")
+
+# 自动选最优服务器
+with TdxClient.from_best_host(ping_timeout=5.0) as c:
+    ...
+
+# asyncio 版本同样支持
+client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
+```
+
+内置服务器列表（`KNOWN_HOSTS`）：
+
+```
+180.153.18.170  180.153.18.171  180.153.18.172
+115.238.56.198  115.238.90.165  218.75.126.9
+47.107.75.159   59.175.238.38
+```
+
+
 ## API
 
 ### TdxClient
@@ -84,32 +111,6 @@ asyncio.run(main())
 ```
 MIN_1  MIN_3  MIN_5  MIN_15  MIN_30  MIN_60
 DAY  WEEK  MONTH  SEASON  YEAR  YEAR_ALT
-```
-
-### 高可用工具
-
-```python
-from xmtdx import ping_all, KNOWN_HOSTS
-
-# 并发测速，返回按延迟排序的 [(host, seconds), ...]
-results = ping_all(KNOWN_HOSTS, timeout=5.0)
-for host, ms in results:
-    print(f"{host}  {ms*1000:.0f} ms")
-
-# 自动选最优服务器
-with TdxClient.from_best_host(ping_timeout=5.0) as c:
-    ...
-
-# asyncio 版本同样支持
-client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
-```
-
-内置服务器列表（`KNOWN_HOSTS`）：
-
-```
-180.153.18.170  180.153.18.171  180.153.18.172
-115.238.56.198  115.238.90.165  218.75.126.9
-47.107.75.159   59.175.238.38
 ```
 
 ## 数据模型
