@@ -23,6 +23,7 @@ from .models.enums import KlineCategory, Market
 from .models.finance import CompanyInfoCategory, FinanceInfo, TdxBlock, XdxrRecord
 from .models.quote import SecurityQuote
 from .models.security import SecurityInfo
+from .models.stats import MarketStat
 from .models.timeseries import MinuteBar, TransactionRecord
 from .transport.async_ import AsyncTdxConnection
 from .transport.sync import KNOWN_HOSTS, TdxConnection, ping_all
@@ -269,6 +270,22 @@ class TdxClient:
                 break
         return bytes(full_data)
 
+    def get_market_stat(self) -> MarketStat:
+        """获取 A 股全市场涨跌统计概况。"""
+        # 通达信中 880005 是行情统计代码
+        quotes = self.get_security_quotes([(Market.SH, "880005")])
+        if not quotes:
+            raise RuntimeError("无法获取市场统计数据")
+        q = quotes[0]
+        return MarketStat(
+            up_count=int(q.price),
+            down_count=int(q.pre_close),
+            neutral_count=int(q.open),
+            total_count=int(q.high),
+            total_amount=q.amount,
+            total_volume=q.vol,
+        )
+
 
 # ============================================================
 # 异步客户端
@@ -492,4 +509,19 @@ class AsyncTdxClient:
             if len(chunk) < chunk_size:
                 break
         return bytes(full_data)
+
+    async def get_market_stat(self) -> MarketStat:
+        """获取 A 股全市场涨跌统计概况。"""
+        quotes = await self.get_security_quotes([(Market.SH, "880005")])
+        if not quotes:
+            raise RuntimeError("无法获取市场统计数据")
+        q = quotes[0]
+        return MarketStat(
+            up_count=int(q.price),
+            down_count=int(q.pre_close),
+            neutral_count=int(q.open),
+            total_count=int(q.high),
+            total_amount=q.amount,
+            total_volume=q.vol,
+        )
 
