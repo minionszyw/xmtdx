@@ -4,8 +4,10 @@ import struct
 from unittest.mock import patch
 
 from xmtdx import Market, TdxClient
+from xmtdx.models.bar import SecurityBar
 from xmtdx.models.quote import SecurityQuote
 from xmtdx.models.security import SecurityInfo
+from xmtdx.models.stats import HistoricalFundFlow
 from xmtdx.models.timeseries import TransactionRecord
 
 
@@ -115,3 +117,90 @@ def test_get_history_fund_flow_parsing():
     assert res[0].year == 2025
     assert res[0].month == 1
     assert res[0].day == 8
+
+
+@patch("xmtdx.client.TdxConnection")
+def test_get_history_fund_flow_fallback(_mock_conn_cls):
+    """Category 22 空回包时，自动回退到历史逐笔重算。"""
+    client = TdxClient("127.0.0.1")
+
+    bars = [
+        SecurityBar(10, 10, 10, 10, 0, 0, 2025, 1, 8, 15, 0),
+        SecurityBar(10, 10, 10, 10, 0, 0, 2025, 1, 9, 15, 0),
+    ]
+    txn_map = {
+        20250108: [
+            TransactionRecord(10, 0, 100.0, 100, 0, 0),
+            TransactionRecord(10, 1, 10.0, 250, 1, 0),
+        ],
+        20250109: [
+            TransactionRecord(10, 0, 10.0, 10, 0, 0),
+        ],
+    }
+
+    def mock_history_txn(_market, _code, date, start, count):
+        if start > 0:
+            return []
+        return txn_map[date]
+
+    with patch.object(TdxClient, "_execute", return_value=[]), patch.object(
+        TdxClient, "get_security_bars", return_value=bars
+    ), patch.object(
+        TdxClient, "get_history_transaction_data", side_effect=mock_history_txn
+    ):
+        flows = client.get_history_fund_flow(Market.SH, "600000", 0, 2)
+
+    assert flows == [
+        HistoricalFundFlow(
+            year=2025,
+            month=1,
+            day=8,
+            super_in=1000000.0,
+            super_out=0.0,
+            large_in=0.0,
+            large_out=250000.0,
+            medium_in=0.0,
+            medium_out=0.0,
+            small_in=0.0,
+            small_out=0.0,
+        ),
+        HistoricalFundFlow(
+            year=2025,
+            month=1,
+            day=9,
+            super_in=0.0,
+            super_out=0.0,
+            large_in=0.0,
+            large_out=0.0,
+            medium_in=0.0,
+            medium_out=0.0,
+            small_in=10000.0,
+            small_out=0.0,
+        ),
+    ]
+
+
+@patch("xmtdx.client.TdxConnection")
+def test_get_price_limits_uses_listing_window(_mock_conn_cls):
+    """client.get_price_limits 应结合日 K 条数判断上市初期限价窗口。"""
+    client = TdxClient("127.0.0.1")
+
+    with patch.object(
+        TdxClient,
+        "get_security_bars",
+        return_value=[SecurityBar(0, 0, 0, 0, 0, 0, 2025, 1, 1, 15, 0)] * 5,
+    ):
+        assert client.get_price_limits(Market.SH, "600001", "主板新股", 10.0) == (
+            None,
+            None,
+        )
+
+    with patch.object(
+        TdxClient,
+        "get_security_bars",
+        return_value=[SecurityBar(0, 0, 0, 0, 0, 0, 2025, 1, 1, 15, 0)] * 6,
+    ):
+        assert client.get_price_limits(Market.SH, "600001", "主板老股", 10.0) == (
+            11.0,
+            9.0,
+        )

@@ -1,11 +1,13 @@
 """高层行情 API：TdxClient（同步）和 AsyncTdxClient（asyncio）。"""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from types import TracebackType
 from typing import TypeVar
 
 from .codec.block import parse_block_dat
 from .codec.industry import parse_tdxhy_cfg
+from .codec.price_rules import compute_price_limits, get_no_limit_window_days
 from .commands.base import BaseCommand
 from .commands.block_info import GetBlockInfoCmd, GetBlockInfoMetaCmd
 from .commands.company_info import GetCompanyInfoCategoryCmd, GetCompanyInfoContentCmd
@@ -32,6 +34,83 @@ from .transport.sync import KNOWN_HOSTS, TdxConnection, ping_all
 
 _DEFAULT_PORT = 7709
 _T = TypeVar("_T")
+
+
+def _record_signature(
+    record: TransactionRecord,
+) -> tuple[int, int, float, int, int, int]:
+    return (
+        record.hour,
+        record.minute,
+        record.price,
+        record.vol,
+        record.buyorsell,
+        record.unknown_last,
+    )
+
+
+def _page_signature(
+    records: list[TransactionRecord],
+) -> tuple[tuple[int, int, float, int, int, int], tuple[int, int, float, int, int, int]]:
+    return (_record_signature(records[0]), _record_signature(records[-1]))
+
+
+def _classify_fund_flow(records: list[TransactionRecord]) -> FundFlow:
+    stats = {
+        "super_in": 0.0,
+        "large_in": 0.0,
+        "medium_in": 0.0,
+        "small_in": 0.0,
+        "super_out": 0.0,
+        "large_out": 0.0,
+        "medium_out": 0.0,
+        "small_out": 0.0,
+    }
+
+    for record in records:
+        amount = record.price * record.vol * 100.0
+        direction = (
+            "in" if record.buyorsell == 0 else "out" if record.buyorsell == 1 else None
+        )
+        if not direction:
+            continue
+
+        if amount >= 1_000_000:
+            stats[f"super_{direction}"] += amount
+        elif amount >= 200_000:
+            stats[f"large_{direction}"] += amount
+        elif amount >= 40_000:
+            stats[f"medium_{direction}"] += amount
+        else:
+            stats[f"small_{direction}"] += amount
+
+    return FundFlow(**stats)
+
+
+def _date_from_bar(bar: SecurityBar) -> int:
+    return bar.year * 10000 + bar.month * 100 + bar.day
+
+
+def _historical_fund_flow_from_records(
+    date: int, records: list[TransactionRecord]
+) -> HistoricalFundFlow:
+    flow = _classify_fund_flow(records)
+    year = date // 10000
+    month = (date // 100) % 100
+    day = date % 100
+    return HistoricalFundFlow(
+        year=year,
+        month=month,
+        day=day,
+        super_in=flow.super_in,
+        super_out=flow.super_out,
+        large_in=flow.large_in,
+        large_out=flow.large_out,
+        medium_in=flow.medium_in,
+        medium_out=flow.medium_out,
+        small_in=flow.small_in,
+        small_out=flow.small_out,
+    )
 
 
 # ============================================================
@@ -195,6 +274,32 @@ class TdxClient:
         """批量获取实时五档行情（最多80只/次）。"""
         return self._execute(GetSecurityQuotesCmd(stocks))
 
+    def get_price_limits(
+        self, market: Market, code: str, name: str, pre_close: float
+    ) -> tuple[float | None, float | None]:
+        """按当前交易状态计算涨跌停价。
+
+        对上市初期不设涨跌幅限制的标的，会先用日 K 线条数估算已上市交易天数。
+        """
+        listed_days: int | None = None
+        no_limit_window_days = get_no_limit_window_days(market, code, name)
+        if no_limit_window_days > 0:
+            try:
+                bars = self.get_security_bars(
+                    market, code, KlineCategory.DAY, 0, no_limit_window_days + 1
+                )
+                listed_days = len(bars)
+            except Exception:
+                listed_days = None
+
+        return compute_price_limits(
+            market,
+            code,
+            name,
+            pre_close,
+            listed_days=listed_days,
+        )
+
     # ------------------------------------------------------------------ #
     # K 线
     # ------------------------------------------------------------------ #
@@ -340,81 +445,84 @@ class TdxClient:
             total_volume=q.vol,
         )
 
-    def get_fund_flow(self, market: Market, code: str) -> FundFlow:
-        """获取个股当日资金流向分布（基于 L1 逐笔数据统计）。"""
-        # 1. 分页拉取当日分笔并去重
+    def _collect_transaction_records(
+        self,
+        fetch_page: Callable[[int, int], list[TransactionRecord]],
+        page_size: int,
+        max_start: int = 10000,
+    ) -> list[TransactionRecord]:
         all_recs: list[TransactionRecord] = []
-        seen_sig = set()
-        seen_page_sigs = set()
+        seen_sig: set[tuple[int, int, float, int, int, int]] = set()
+        seen_page_sigs: set[
+            tuple[
+                tuple[int, int, float, int, int, int],
+                tuple[int, int, float, int, int, int],
+            ]
+        ] = set()
         start = 0
-        
-        while start < 10000:
-            recs = self.get_transaction_data(market, code, start, 2000)
+
+        while start < max_start:
+            recs = fetch_page(start, page_size)
             if not recs:
                 break
-            
-            # 页签名判断：首尾记录组合
-            page_sig = (
-                (
-                    recs[0].hour, recs[0].minute, recs[0].price,
-                    recs[0].vol, recs[0].buyorsell, recs[0].unknown_last
-                ),
-                (
-                    recs[-1].hour, recs[-1].minute, recs[-1].price,
-                    recs[-1].vol, recs[-1].buyorsell, recs[-1].unknown_last
-                ),
-            )
+
+            page_sig = _page_signature(recs)
             if page_sig in seen_page_sigs:
                 break
             seen_page_sigs.add(page_sig)
 
             new_count = 0
-            for r in recs:
-                sig = (r.hour, r.minute, r.price, r.vol, r.buyorsell, r.unknown_last)
+            for record in recs:
+                sig = _record_signature(record)
                 if sig not in seen_sig:
                     seen_sig.add(sig)
-                    all_recs.append(r)
+                    all_recs.append(record)
                     new_count += 1
-            
+
             if new_count == 0:
                 break
-                
+
             start += len(recs)
             if len(recs) < 100:
                 break
-        
-        # 2. 统计逻辑
-        # A 股标准：超大(>100w), 大单(20w-100w), 中单(4w-20w), 小单(<4w)
-        stats = {
-            "super_in": 0.0, "large_in": 0.0, "medium_in": 0.0, "small_in": 0.0,
-            "super_out": 0.0, "large_out": 0.0, "medium_out": 0.0, "small_out": 0.0,
-        }
-        
-        for r in all_recs:
-            amount = r.price * r.vol * 100.0 # A股 1手=100股
-            direction = "in" if r.buyorsell == 0 else "out" if r.buyorsell == 1 else None
-            if not direction:
-                continue
-                
-            if amount >= 1000000:
-                stats[f"super_{direction}"] += amount
-            elif amount >= 200000:
-                stats[f"large_{direction}"] += amount
-            elif amount >= 40000:
-                stats[f"medium_{direction}"] += amount
-            else:
-                stats[f"small_{direction}"] += amount
-                
-        return FundFlow(**stats)
+
+        return all_recs
+
+    def get_fund_flow(self, market: Market, code: str) -> FundFlow:
+        """获取个股当日资金流向分布（基于 L1 逐笔数据统计）。"""
+        records = self._collect_transaction_records(
+            lambda start, page_size: self.get_transaction_data(market, code, start, page_size),
+            2000,
+        )
+        return _classify_fund_flow(records)
 
     def get_history_fund_flow(
         self, market: Market, code: str, start: int, count: int
     ) -> list[HistoricalFundFlow]:
-        """获取个股历史日线资金流向序列（Category 22）。
+        """获取个股历史日线资金流向序列。
 
-        [EXPERIMENTAL] 当前多台公开主机对该请求仍可能返回空列表。
+        优先走 Category 22 直连接口；若服务器返回空列表，则自动回退为
+        “日 K 线取日期 + 历史逐笔成交重算资金流”的兼容实现。
         """
-        return self._execute(GetHistoryFundFlowCmd(market, code, start, count))
+        try:
+            direct = self._execute(GetHistoryFundFlowCmd(market, code, start, count))
+        except Exception:
+            direct = []
+        if direct:
+            return direct
+
+        bars = self.get_security_bars(market, code, KlineCategory.DAY, start, count)
+        results: list[HistoricalFundFlow] = []
+        for bar in bars:
+            date = _date_from_bar(bar)
+            records = self._collect_transaction_records(
+                lambda page_start, page_size: self.get_history_transaction_data(
+                    market, code, date, page_start, page_size
+                ),
+                800,
+            )
+            results.append(_historical_fund_flow_from_records(date, records))
+        return results
 
 
 # ============================================================
@@ -588,6 +696,29 @@ class AsyncTdxClient:
     ) -> list[SecurityQuote]:
         return await self._execute(GetSecurityQuotesCmd(stocks))
 
+    async def get_price_limits(
+        self, market: Market, code: str, name: str, pre_close: float
+    ) -> tuple[float | None, float | None]:
+        """按当前交易状态计算涨跌停价。"""
+        listed_days: int | None = None
+        no_limit_window_days = get_no_limit_window_days(market, code, name)
+        if no_limit_window_days > 0:
+            try:
+                bars = await self.get_security_bars(
+                    market, code, KlineCategory.DAY, 0, no_limit_window_days + 1
+                )
+                listed_days = len(bars)
+            except Exception:
+                listed_days = None
+
+        return compute_price_limits(
+            market,
+            code,
+            name,
+            pre_close,
+            listed_days=listed_days,
+        )
+
     async def get_security_bars(
         self,
         market: Market,
@@ -703,73 +834,83 @@ class AsyncTdxClient:
             total_volume=q.vol,
         )
 
-    async def get_fund_flow(self, market: Market, code: str) -> FundFlow:
-        """获取个股当日资金流向分布（基于 L1 逐笔数据统计）。"""
-        # 1. 分页拉取当日分笔并去重
+    async def _collect_transaction_records(
+        self,
+        fetch_page: Callable[[int, int], Awaitable[list[TransactionRecord]]],
+        page_size: int,
+        max_start: int = 10000,
+    ) -> list[TransactionRecord]:
         all_recs: list[TransactionRecord] = []
-        seen_sig = set()
-        seen_page_sigs = set()
+        seen_sig: set[tuple[int, int, float, int, int, int]] = set()
+        seen_page_sigs: set[
+            tuple[
+                tuple[int, int, float, int, int, int],
+                tuple[int, int, float, int, int, int],
+            ]
+        ] = set()
         start = 0
-        
-        while start < 10000:
-            recs = await self.get_transaction_data(market, code, start, 2000)
+
+        while start < max_start:
+            recs = await fetch_page(start, page_size)
             if not recs:
                 break
-            
-            # 页签名判断：首尾记录组合
-            page_sig = (
-                (
-                    recs[0].hour, recs[0].minute, recs[0].price,
-                    recs[0].vol, recs[0].buyorsell, recs[0].unknown_last
-                ),
-                (
-                    recs[-1].hour, recs[-1].minute, recs[-1].price,
-                    recs[-1].vol, recs[-1].buyorsell, recs[-1].unknown_last
-                ),
-            )
+
+            page_sig = _page_signature(recs)
             if page_sig in seen_page_sigs:
                 break
             seen_page_sigs.add(page_sig)
 
             new_count = 0
-            for r in recs:
-                sig = (r.hour, r.minute, r.price, r.vol, r.buyorsell, r.unknown_last)
+            for record in recs:
+                sig = _record_signature(record)
                 if sig not in seen_sig:
                     seen_sig.add(sig)
-                    all_recs.append(r)
+                    all_recs.append(record)
                     new_count += 1
-            
+
             if new_count == 0:
                 break
-                
+
             start += len(recs)
             if len(recs) < 100:
                 break
-        
-        stats = {
-            "super_in": 0.0, "large_in": 0.0, "medium_in": 0.0, "small_in": 0.0,
-            "super_out": 0.0, "large_out": 0.0, "medium_out": 0.0, "small_out": 0.0,
-        }
-        for r in all_recs:
-            amount = r.price * r.vol * 100.0
-            direction = "in" if r.buyorsell == 0 else "out" if r.buyorsell == 1 else None
-            if not direction:
-                continue
-            if amount >= 1000000:
-                stats[f"super_{direction}"] += amount
-            elif amount >= 200000:
-                stats[f"large_{direction}"] += amount
-            elif amount >= 40000:
-                stats[f"medium_{direction}"] += amount
-            else:
-                stats[f"small_{direction}"] += amount
-        return FundFlow(**stats)
+
+        return all_recs
+
+    async def get_fund_flow(self, market: Market, code: str) -> FundFlow:
+        """获取个股当日资金流向分布（基于 L1 逐笔数据统计）。"""
+        records = await self._collect_transaction_records(
+            lambda start, page_size: self.get_transaction_data(
+                market, code, start, page_size
+            ),
+            2000,
+        )
+        return _classify_fund_flow(records)
 
     async def get_history_fund_flow(
         self, market: Market, code: str, start: int, count: int
     ) -> list[HistoricalFundFlow]:
-        """获取个股历史日线资金流向序列（Category 22）。
+        """获取个股历史日线资金流向序列。
 
-        [EXPERIMENTAL] 当前多台公开主机对该请求仍可能返回空列表。
+        优先走 Category 22 直连接口；若服务器返回空列表，则自动回退为
+        “日 K 线取日期 + 历史逐笔成交重算资金流”的兼容实现。
         """
-        return await self._execute(GetHistoryFundFlowCmd(market, code, start, count))
+        try:
+            direct = await self._execute(GetHistoryFundFlowCmd(market, code, start, count))
+        except Exception:
+            direct = []
+        if direct:
+            return direct
+
+        bars = await self.get_security_bars(market, code, KlineCategory.DAY, start, count)
+        results: list[HistoricalFundFlow] = []
+        for bar in bars:
+            date = _date_from_bar(bar)
+            records = await self._collect_transaction_records(
+                lambda page_start, page_size: self.get_history_transaction_data(
+                    market, code, date, page_start, page_size
+                ),
+                800,
+            )
+            results.append(_historical_fund_flow_from_records(date, records))
+        return results

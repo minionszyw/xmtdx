@@ -107,3 +107,19 @@ def test_compute_price_limits_for_indices():
     assert compute_price_limits(Market.SH, "999999", "上证指数", 4026.63) == (None, None)
     assert compute_price_limits(Market.SH, "880005", "涨跌家数", 1841.0) == (None, None)
     assert compute_price_limits(Market.SZ, "399001", "深证成指", 10412.63) == (None, None)
+
+
+def test_compute_price_limits_for_newly_listed_stocks():
+    """上市初期限价窗口应返回 None。"""
+    assert compute_price_limits(
+        Market.SH, "600001", "主板新股", 10.0, listed_days=5
+    ) == (None, None)
+    assert compute_price_limits(
+        Market.SH, "600001", "主板新股", 10.0, listed_days=6
+    ) == (11.0, 9.0)
+    assert compute_price_limits(
+        Market.BJ, "920002", "北交所新股", 84.36, listed_days=1
+    ) == (None, None)
+    assert compute_price_limits(
+        Market.BJ, "920002", "北交所新股", 84.36, listed_days=2
+    ) == (109.67, 59.05)

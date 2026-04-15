@@ -99,6 +99,7 @@ client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
 | `get_security_list_all()` | 沪深 A 股列表（自动挂载行业信息；BJ 暂未纳入） |
 | `get_market_stat()` | 全市场 A 股涨跌统计（家数、成交额） |
 | `get_security_quotes([(market, code), ...])` | 批量实时五档行情（最多 80 只/次） |
+| `get_price_limits(market, code, name, pre_close)` | 计算当前涨跌停价（自动处理上市初期无涨跌幅限制） |
 | `get_security_bars(market, code, category, start, count=800)` | K 线（股票） |
 | `get_index_bars(market, code, category, start, count=800)` | K 线（指数） |
 | `get_minute_time_data(market, code)` | 今日分时（240 条） |
@@ -106,7 +107,7 @@ client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
 | `get_transaction_data(market, code, start, count=800)` | 当日逐笔成交（分页） |
 | `get_history_transaction_data(market, code, date, start, count=800)` | 历史逐笔成交 |
 | `get_fund_flow(market, code)` | 当日资金流向统计（超大/大/中/小单） |
-| `get_history_fund_flow(market, code, start, count)` | 历史日线资金流向序列（Category 22，实验性） |
+| `get_history_fund_flow(market, code, start, count)` | 历史日线资金流向序列（优先 Category 22，空回包时自动回退到历史逐笔重算） |
 | `get_xdxr_info(market, code)` | 除权除息历史 |
 | `get_finance_info(market, code)` | 最新财务数据 |
 | `get_company_info_category(market, code)` | 公司信息文件目录 |
@@ -149,7 +150,8 @@ _raw
 ```
 
 `limit_up` / `limit_down` 当前不再直接由协议字段映射，默认保留为 `None`；
-建议通过 `xmtdx.codec.price_rules.compute_price_limits(...)` 按业务规则计算。
+建议通过 `client.get_price_limits(...)` 计算当前涨跌停价，或用
+`xmtdx.codec.price_rules.compute_price_limits(..., listed_days=...)` 做纯规则计算。
 
 ### MinuteBar（分时）
 

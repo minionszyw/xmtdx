@@ -3,7 +3,6 @@
 import sys
 
 from xmtdx import Market, TdxClient
-from xmtdx.codec.price_rules import compute_price_limits
 from xmtdx.models.enums import KlineCategory
 
 
@@ -58,8 +57,8 @@ def main():
             print(f"  Error: {e}")
             success = False
 
-        # 3. 验证价格规则引擎
-        print("\n[3] Price Limits (Rule Engine):")
+        # 3. 验证价格限制计算
+        print("\n[3] Price Limits:")
         samples = [
             ("600000", Market.SH, "浦发银行"),
             ("300750", Market.SZ, "宁德时代"),
@@ -69,7 +68,7 @@ def main():
         try:
             quotes = client.get_security_quotes([(market, code) for code, market, _name in samples])
             for q, (_code, _market, name) in zip(quotes, samples, strict=True):
-                lu, ld = compute_price_limits(q.market, q.code, name, q.pre_close)
+                lu, ld = client.get_price_limits(q.market, q.code, name, q.pre_close)
                 print(
                     f"  {q.code}: Price={q.price:.2f}, PreClose={q.pre_close:.2f}, "
                     f"LimitUp={lu}, LimitDown={ld}"
@@ -85,8 +84,8 @@ def main():
             print(f"  Error: {e}")
             success = False
 
-        # 4. 验证 get_history_fund_flow (Category 22)
-        print("\n[4] History Fund Flow (Category 22, experimental):")
+        # 4. 验证 get_history_fund_flow（直连或 fallback）
+        print("\n[4] History Fund Flow:")
         try:
             h_flow = client.get_history_fund_flow(Market.SH, "600000", 0, 1)
             if h_flow:
@@ -94,9 +93,11 @@ def main():
                 print(f"  Date: {f.year}-{f.month}-{f.day}, SuperIn: {f.super_in:.2f}")
                 print("  Result: SUCCESS")
             else:
-                print("  Result: INFO (No data returned; interface remains experimental)")
+                print("  Result: FAIL (No data returned)")
+                success = False
         except Exception as e:
-            print(f"  Error: {e} (Experimental interface; not counted as hard failure)")
+            print(f"  Error: {e}")
+            success = False
 
         # 5. 验证 get_fund_flow 分页
         print("\n[5] Fund Flow Pagination (600000):")
