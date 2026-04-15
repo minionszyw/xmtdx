@@ -96,7 +96,7 @@ client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
 |------|------|
 | `get_security_count(market)` | 市场证券总数 |
 | `get_security_list(market, start)` | 证券列表（每页 ~1000 条） |
-| `get_security_list_all()` | 全市场 A 股列表（自动挂载行业信息） |
+| `get_security_list_all()` | 沪深 A 股列表（自动挂载行业信息；BJ 暂未纳入） |
 | `get_market_stat()` | 全市场 A 股涨跌统计（家数、成交额） |
 | `get_security_quotes([(market, code), ...])` | 批量实时五档行情（最多 80 只/次） |
 | `get_security_bars(market, code, category, start, count=800)` | K 线（股票） |
@@ -106,7 +106,7 @@ client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
 | `get_transaction_data(market, code, start, count=800)` | 当日逐笔成交（分页） |
 | `get_history_transaction_data(market, code, date, start, count=800)` | 历史逐笔成交 |
 | `get_fund_flow(market, code)` | 当日资金流向统计（超大/大/中/小单） |
-| `get_history_fund_flow(market, code, start, count)` | 历史日线资金流向序列（Category 22） |
+| `get_history_fund_flow(market, code, start, count)` | 历史日线资金流向序列（Category 22，实验性） |
 | `get_xdxr_info(market, code)` | 除权除息历史 |
 | `get_finance_info(market, code)` | 最新财务数据 |
 | `get_company_info_category(market, code)` | 公司信息文件目录 |
@@ -147,6 +147,9 @@ rise_speed  limit_up  limit_down  server_time
 unknown_2..unknown_3  unknown_5..unknown_8
 _raw
 ```
+
+`limit_up` / `limit_down` 当前不再直接由协议字段映射，默认保留为 `None`；
+建议通过 `xmtdx.codec.price_rules.compute_price_limits(...)` 按业务规则计算。
 
 ### MinuteBar（分时）
 
@@ -225,7 +228,7 @@ main_net_inflow
 | 4 | `transaction` | 最后一个字段被 `_` 丢弃 | 保留为 `unknown_last` |
 | 5 | `minute_time` | `reversed1` 字段被丢弃 | 保留为 `unknown_1` |
 | 6 | `xdxr_info` | 股本字段用 `float(uint32)` 直解，差约 374 倍 | 改用 `_decode_volume`（通达信自定义浮点），单位万股，与 `FinanceInfo` 完全吻合 |
-| 7 | `security_quotes` | 涨停/跌停价映射错误或缺失 | 解析 `unknown_2/3` 为绝对价格字段 `limit_up/down` |
+| 7 | `security_quotes` | 涨停/跌停价映射错误或缺失 | 停止使用不可信协议位，改由业务规则计算 |
 
 ## 架构
 

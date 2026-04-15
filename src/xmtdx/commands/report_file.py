@@ -2,8 +2,6 @@
 
 import struct
 
-from .._binary import slice_bytes, unpack_from
-from ..exceptions import TdxDecodeError
 from .base import BaseCommand
 
 

@@ -60,12 +60,12 @@ class SecurityQuote:
 
     # 价格指标
     rise_speed: float  # 涨速（原 reversed_bytes9 / 100）
-    limit_up: float    # 涨停价（由 unknown_2 / 100 转换）
-    limit_down: float  # 跌停价（由 unknown_3 / 100 转换）
+    limit_up: float | None    # 涨停价（业务规则计算）
+    limit_down: float | None  # 跌停价（业务规则计算）
 
     # 未知字段：买卖量之后的两个变长整数（保留供进一步分析）
-    unknown_2: int = field(default=0, repr=False)  # 原始涨停价整数（price_raw + diff）
-    unknown_3: int = field(default=0, repr=False)  # 原始跌停价整数（price_raw + diff）
+    unknown_2: int = field(default=0, repr=False)  # 未知变长整数 2
+    unknown_3: int = field(default=0, repr=False)  # 未知变长整数 3
 
     # 未知字段：尾部四个变长整数
     unknown_5: int = field(default=0, repr=False)  # 原 reversed_bytes5

@@ -266,7 +266,8 @@ def test_xdxr_info_parse():
     # share count decode: 通达信自定义浮点，单位万股，与 FinanceInfo.zong_guben/10000 一致
     stock_recs = [r for r in recs if 2 <= r.category <= 10]
     last = stock_recs[-1]
-    # 最近一条 hou_zongguben ≈ 3_330_583.75 万股（与 FinanceInfo.zong_guben 33_305_837_500 ÷ 10000 完全吻合）
+    # 最近一条 hou_zongguben ≈ 3_330_583.75 万股
+    # 与 FinanceInfo.zong_guben 33_305_837_500 ÷ 10000 完全吻合
     assert last.hou_zongguben is not None
     assert abs(last.hou_zongguben - 3_330_583.75) < 1.0
 

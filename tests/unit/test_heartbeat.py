@@ -1,9 +1,9 @@
 """心跳机制单元测试。"""
 
 import asyncio
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
-from xmtdx import AsyncTdxClient, Market
+from unittest.mock import AsyncMock, patch
+
+from xmtdx import AsyncTdxClient
 
 
 def test_heartbeat_sends_periodically():

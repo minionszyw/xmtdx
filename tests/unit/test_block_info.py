@@ -1,10 +1,12 @@
 """板块信息单元测试。"""
 
-import pytest
+import asyncio
 import struct
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from xmtdx.client import AsyncTdxClient, TdxClient
+from xmtdx.codec.block import parse_block_dat
+from xmtdx.models.finance import TdxBlock
 
 
 @patch("xmtdx.client.AsyncTdxConnection")
@@ -14,7 +16,7 @@ def test_async_get_block_info_logic(mock_conn_cls):
     
     # 模拟异步 execute
     async def mock_execute(cmd):
-        from xmtdx.commands.block_info import GetBlockInfoMetaCmd, GetBlockInfoCmd
+        from xmtdx.commands.block_info import GetBlockInfoCmd, GetBlockInfoMetaCmd
         if isinstance(cmd, GetBlockInfoMetaCmd):
             return 100, "hash"
         if isinstance(cmd, GetBlockInfoCmd):
@@ -34,10 +36,7 @@ def test_async_get_block_info_logic(mock_conn_cls):
             assert isinstance(res, list)
             assert mock_conn.execute.call_count == 2 # 1 meta + 1 data
 
-    import asyncio
     asyncio.run(main())
-from xmtdx.codec.block import parse_block_dat
-from xmtdx.models.finance import TdxBlock
 
 
 def test_parse_block_dat_empty():
@@ -81,7 +80,7 @@ def test_get_block_info_logic(mock_conn_cls):
     
     # 模拟 GetBlockInfoMeta 响应：size=35000 (需要2次拉取)
     def mock_execute(cmd):
-        from xmtdx.commands.block_info import GetBlockInfoMetaCmd, GetBlockInfoCmd
+        from xmtdx.commands.block_info import GetBlockInfoCmd, GetBlockInfoMetaCmd
         if isinstance(cmd, GetBlockInfoMetaCmd):
             return 35000, "dummy_hash"
         if isinstance(cmd, GetBlockInfoCmd):

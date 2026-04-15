@@ -37,20 +37,23 @@ class GetSecurityBarsCmd(BaseCommand[list[SecurityBar]]):
         self.count = count
 
     def build_request(self) -> bytes:
+        # Header (12 bytes) + Payload (28 bytes) = 40 bytes
         return struct.pack(
             "<HIHHHH6sHHHHIIH",
-            0x010C,        # 固定
-            0x01016408,    # 固定
-            0x001C,        # 固定（payload 长度）
-            0x001C,        # 固定（payload 长度）
-            0x052D,        # 命令码：K线
+            0x010C,
+            0x01016408,
+            0x001C,
+            0x001C,
+            0x052D,
             int(self.market),
             self.code,
             int(self.category),
-            1,             # 固定
+            1,
             self.start,
             self.count,
-            0, 0, 0,       # 填充
+            0,
+            0,
+            0,
         )
 
     def parse_response(self, body: bytes) -> list[SecurityBar]:

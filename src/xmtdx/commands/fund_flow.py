@@ -2,9 +2,7 @@
 
 import struct
 
-from .._binary import slice_bytes, unpack_from
 from ..codec.volume import _decode_volume
-from ..exceptions import TdxDecodeError
 from ..models.enums import Market
 from ..models.stats import HistoricalFundFlow
 from .base import BaseCommand
@@ -20,29 +18,24 @@ class GetHistoryFundFlowCmd(BaseCommand[list[HistoricalFundFlow]]):
         self.count = count
 
     def build_request(self) -> bytes:
-        # 使用 0x052d 指令（K 线类指令）
-        # 负载长度固定为 28 字节 (0x1c)
-        payload_len = 0x1c
-        header = struct.pack(
-            "<HIHHH",
-            0x010c,
-            0x01016408, # 注意此处标志位与普通行情略有不同
-            payload_len,
-            payload_len,
-            0x052d,
-        )
-        # 参数包：Market(B), Code(6s), Category(H=22), Unknown(H=1), Start(I), Count(I), 3个Unknown(H)
-        params = struct.pack(
-            "<B6sHHIIHHH",
+        # Header (12 bytes) + Payload (28 bytes) = 40 bytes
+        return struct.pack(
+            "<HIHHHH6sHHHHIIH",
+            0x010C,
+            0x01016408,
+            0x001C,
+            0x001C,
+            0x052D,
             int(self.market),
             self.code,
-            22, # Category 22
-            1,  # Unknown
+            22,
+            1,
             self.start,
             self.count,
-            0, 0, 0
+            0,
+            0,
+            0,
         )
-        return header + params
 
     def parse_response(self, body: bytes) -> list[HistoricalFundFlow]:
         # 响应格式：9字节头 + 2字节数量 + 每条记录 36 字节

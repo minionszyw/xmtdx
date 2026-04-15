@@ -4,21 +4,21 @@ import asyncio
 from types import TracebackType
 from typing import TypeVar
 
+from .codec.block import parse_block_dat
+from .codec.industry import parse_tdxhy_cfg
 from .commands.base import BaseCommand
 from .commands.block_info import GetBlockInfoCmd, GetBlockInfoMetaCmd
 from .commands.company_info import GetCompanyInfoCategoryCmd, GetCompanyInfoContentCmd
 from .commands.finance_info import GetFinanceInfoCmd
 from .commands.fund_flow import GetHistoryFundFlowCmd
-from .commands.report_file import GetReportFileCmd
 from .commands.minute_time import GetHistoryMinuteTimeDataCmd, GetMinuteTimeDataCmd
+from .commands.report_file import GetReportFileCmd
 from .commands.security_bars import GetIndexBarsCmd, GetSecurityBarsCmd
 from .commands.security_count import GetSecurityCountCmd
 from .commands.security_list import GetSecurityListCmd
 from .commands.security_quotes import GetSecurityQuotesCmd
 from .commands.transaction import GetHistoryTransactionDataCmd, GetTransactionDataCmd
 from .commands.xdxr_info import GetXdxrInfoCmd
-from .codec.block import parse_block_dat
-from .codec.industry import parse_tdxhy_cfg
 from .exceptions import TdxConnectionError
 from .models.bar import SecurityBar
 from .models.enums import KlineCategory, Market
@@ -148,7 +148,12 @@ class TdxClient:
         return self._execute(GetSecurityListCmd(market, start))
 
     def get_security_list_all(self) -> list[SecurityInfo]:
-        """获取全市场（沪深 A 股）完整证券列表，并自动挂载行业信息。"""
+        """获取沪深 A 股完整证券列表，并自动挂载行业信息。
+
+        注意：
+            `Market.BJ` 的证券列表请求长期存在服务器超时问题，当前版本暂不纳入此方法。
+            若需 BJ 名单，应改由 `base_info.zip` 等文件离线解析获得。
+        """
         # 1. 尝试获取行业配置
         industry_map = {}
         try:
@@ -159,7 +164,9 @@ class TdxClient:
             pass
 
         all_stocks: list[SecurityInfo] = []
-        for market in [Market.SH, Market.SZ, Market.BJ]:
+        # 注意：Market.BJ 证券列表请求常年超时，短期降级为仅 SH/SZ；
+        # BJ 列表需解析 base_info.zip 获得（待实现）。
+        for market in [Market.SH, Market.SZ]:
             count = self.get_security_count(market)
             for start in range(0, count, 1000):
                 stocks = self.get_security_list(market, start)
@@ -173,10 +180,6 @@ class TdxClient:
                     elif market == Market.SZ:
                         # 深市 A 股：00xxxx, 30xxxx
                         if s.code.startswith(("00", "30")):
-                            is_a_share = True
-                    elif market == Market.BJ:
-                        # 京市 A 股：8xxxxx, 43xxxx, 92xxxx
-                        if s.code.startswith(("8", "43", "92")):
                             is_a_share = True
                     
                     if is_a_share:
@@ -312,31 +315,72 @@ class TdxClient:
         return bytes(full_data)
 
     def get_market_stat(self) -> MarketStat:
-        """获取 A 股全市场涨跌统计概况。"""
-        # 通达信中 880005 是行情统计代码
+        """获取 A 股全市场涨跌统计概况（基于 880005 行情统计）。
+
+        注意：
+            `suspended_count` 是 `total - up - down - neutral` 的残差估算值，
+            用于保证计数守恒，不应视为协议已明确验证的停牌字段。
+        """
+        # 通达信中 880005 是全市场行情统计代码
         quotes = self.get_security_quotes([(Market.SH, "880005")])
         if not quotes:
             raise RuntimeError("无法获取市场统计数据")
         q = quotes[0]
+        up = int(q.price)
+        down = int(q.pre_close)
+        neutral = int(q.low)
+        total = int(q.high)
         return MarketStat(
-            up_count=int(q.price),
-            down_count=int(q.pre_close),
-            neutral_count=int(q.open),
-            total_count=int(q.high),
+            up_count=up,
+            down_count=down,
+            neutral_count=neutral,
+            suspended_count=max(0, total - up - down - neutral),
+            total_count=total,
             total_amount=q.amount,
             total_volume=q.vol,
         )
 
     def get_fund_flow(self, market: Market, code: str) -> FundFlow:
         """获取个股当日资金流向分布（基于 L1 逐笔数据统计）。"""
-        # 1. 拉取当日全量分笔 (TDX L1 最多支持约 2000-4000 条，通常足够 A 股当日统计)
+        # 1. 分页拉取当日分笔并去重
         all_recs: list[TransactionRecord] = []
-        for start in [0, 2000, 4000]:
+        seen_sig = set()
+        seen_page_sigs = set()
+        start = 0
+        
+        while start < 10000:
             recs = self.get_transaction_data(market, code, start, 2000)
             if not recs:
                 break
-            all_recs.extend(recs)
-            if len(recs) < 2000:
+            
+            # 页签名判断：首尾记录组合
+            page_sig = (
+                (
+                    recs[0].hour, recs[0].minute, recs[0].price,
+                    recs[0].vol, recs[0].buyorsell, recs[0].unknown_last
+                ),
+                (
+                    recs[-1].hour, recs[-1].minute, recs[-1].price,
+                    recs[-1].vol, recs[-1].buyorsell, recs[-1].unknown_last
+                ),
+            )
+            if page_sig in seen_page_sigs:
+                break
+            seen_page_sigs.add(page_sig)
+
+            new_count = 0
+            for r in recs:
+                sig = (r.hour, r.minute, r.price, r.vol, r.buyorsell, r.unknown_last)
+                if sig not in seen_sig:
+                    seen_sig.add(sig)
+                    all_recs.append(r)
+                    new_count += 1
+            
+            if new_count == 0:
+                break
+                
+            start += len(recs)
+            if len(recs) < 100:
                 break
         
         # 2. 统计逻辑
@@ -366,7 +410,10 @@ class TdxClient:
     def get_history_fund_flow(
         self, market: Market, code: str, start: int, count: int
     ) -> list[HistoricalFundFlow]:
-        """获取个股历史日线资金流向序列（Category 22）。"""
+        """获取个股历史日线资金流向序列（Category 22）。
+
+        [EXPERIMENTAL] 当前多台公开主机对该请求仍可能返回空列表。
+        """
         return self._execute(GetHistoryFundFlowCmd(market, code, start, count))
 
 
@@ -500,7 +547,12 @@ class AsyncTdxClient:
         return await self._execute(GetSecurityListCmd(market, start))
 
     async def get_security_list_all(self) -> list[SecurityInfo]:
-        """获取全市场完整证券列表，并自动挂载行业信息。"""
+        """获取沪深 A 股完整证券列表，并自动挂载行业信息。
+
+        注意：
+            `Market.BJ` 的证券列表请求长期存在服务器超时问题，当前版本暂不纳入此方法。
+            若需 BJ 名单，应改由 `base_info.zip` 等文件离线解析获得。
+        """
         industry_map = {}
         try:
             cfg_data = await self.get_report_file("tdxhy.cfg")
@@ -510,7 +562,9 @@ class AsyncTdxClient:
             pass
 
         all_stocks: list[SecurityInfo] = []
-        for market in [Market.SH, Market.SZ, Market.BJ]:
+        # 注意：Market.BJ 证券列表请求常年超时，短期降级为仅 SH/SZ；
+        # BJ 列表需解析 base_info.zip 获得（待实现）。
+        for market in [Market.SH, Market.SZ]:
             count = await self.get_security_count(market)
             for start in range(0, count, 1000):
                 stocks = await self.get_security_list(market, start)
@@ -521,9 +575,6 @@ class AsyncTdxClient:
                             is_a_share = True
                     elif market == Market.SZ:
                         if s.code.startswith(("00", "30")):
-                            is_a_share = True
-                    elif market == Market.BJ:
-                        if s.code.startswith(("8", "43", "92")):
                             is_a_share = True
                     
                     if is_a_share:
@@ -627,29 +678,72 @@ class AsyncTdxClient:
         return bytes(full_data)
 
     async def get_market_stat(self) -> MarketStat:
-        """获取 A 股全市场涨跌统计概况。"""
+        """获取 A 股全市场涨跌统计概况（基于 880005 行情统计）。
+
+        注意：
+            `suspended_count` 是 `total - up - down - neutral` 的残差估算值，
+            用于保证计数守恒，不应视为协议已明确验证的停牌字段。
+        """
+        # 通达信中 880005 是全市场行情统计代码
         quotes = await self.get_security_quotes([(Market.SH, "880005")])
         if not quotes:
             raise RuntimeError("无法获取市场统计数据")
         q = quotes[0]
+        up = int(q.price)
+        down = int(q.pre_close)
+        neutral = int(q.low)
+        total = int(q.high)
         return MarketStat(
-            up_count=int(q.price),
-            down_count=int(q.pre_close),
-            neutral_count=int(q.open),
-            total_count=int(q.high),
+            up_count=up,
+            down_count=down,
+            neutral_count=neutral,
+            suspended_count=max(0, total - up - down - neutral),
+            total_count=total,
             total_amount=q.amount,
             total_volume=q.vol,
         )
 
     async def get_fund_flow(self, market: Market, code: str) -> FundFlow:
-        """获取个股当日资金流向分布。"""
+        """获取个股当日资金流向分布（基于 L1 逐笔数据统计）。"""
+        # 1. 分页拉取当日分笔并去重
         all_recs: list[TransactionRecord] = []
-        for start in [0, 2000, 4000]:
+        seen_sig = set()
+        seen_page_sigs = set()
+        start = 0
+        
+        while start < 10000:
             recs = await self.get_transaction_data(market, code, start, 2000)
             if not recs:
                 break
-            all_recs.extend(recs)
-            if len(recs) < 2000:
+            
+            # 页签名判断：首尾记录组合
+            page_sig = (
+                (
+                    recs[0].hour, recs[0].minute, recs[0].price,
+                    recs[0].vol, recs[0].buyorsell, recs[0].unknown_last
+                ),
+                (
+                    recs[-1].hour, recs[-1].minute, recs[-1].price,
+                    recs[-1].vol, recs[-1].buyorsell, recs[-1].unknown_last
+                ),
+            )
+            if page_sig in seen_page_sigs:
+                break
+            seen_page_sigs.add(page_sig)
+
+            new_count = 0
+            for r in recs:
+                sig = (r.hour, r.minute, r.price, r.vol, r.buyorsell, r.unknown_last)
+                if sig not in seen_sig:
+                    seen_sig.add(sig)
+                    all_recs.append(r)
+                    new_count += 1
+            
+            if new_count == 0:
+                break
+                
+            start += len(recs)
+            if len(recs) < 100:
                 break
         
         stats = {
@@ -674,6 +768,8 @@ class AsyncTdxClient:
     async def get_history_fund_flow(
         self, market: Market, code: str, start: int, count: int
     ) -> list[HistoricalFundFlow]:
-        """获取个股历史日线资金流向序列。"""
-        return await self._execute(GetHistoryFundFlowCmd(market, code, start, count))
+        """获取个股历史日线资金流向序列（Category 22）。
 
+        [EXPERIMENTAL] 当前多台公开主机对该请求仍可能返回空列表。
+        """
+        return await self._execute(GetHistoryFundFlowCmd(market, code, start, count))
