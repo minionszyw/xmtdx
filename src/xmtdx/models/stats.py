@@ -38,3 +38,27 @@ class FundFlow:
         """全单净流入。"""
         return (self.super_in + self.large_in + self.medium_in + self.small_in) - \
                (self.super_out + self.large_out + self.medium_out + self.small_out)
+
+
+@dataclass
+class HistoricalFundFlow:
+    """历史日线资金流向条目。"""
+    
+    year: int
+    month: int
+    day: int
+    
+    # 金额项 (单位：元)
+    super_in: float
+    super_out: float
+    large_in: float
+    large_out: float
+    medium_in: float
+    medium_out: float
+    small_in: float
+    small_out: float
+    
+    @property
+    def main_net_inflow(self) -> float:
+        """当日主力净流入。"""
+        return (self.super_in + self.large_in) - (self.super_out + self.large_out)

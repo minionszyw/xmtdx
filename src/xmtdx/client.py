@@ -8,6 +8,7 @@ from .commands.base import BaseCommand
 from .commands.block_info import GetBlockInfoCmd, GetBlockInfoMetaCmd
 from .commands.company_info import GetCompanyInfoCategoryCmd, GetCompanyInfoContentCmd
 from .commands.finance_info import GetFinanceInfoCmd
+from .commands.fund_flow import GetHistoryFundFlowCmd
 from .commands.report_file import GetReportFileCmd
 from .commands.minute_time import GetHistoryMinuteTimeDataCmd, GetMinuteTimeDataCmd
 from .commands.security_bars import GetIndexBarsCmd, GetSecurityBarsCmd
@@ -24,7 +25,7 @@ from .models.enums import KlineCategory, Market
 from .models.finance import CompanyInfoCategory, FinanceInfo, TdxBlock, XdxrRecord
 from .models.quote import SecurityQuote
 from .models.security import SecurityInfo
-from .models.stats import FundFlow, MarketStat
+from .models.stats import FundFlow, HistoricalFundFlow, MarketStat
 from .models.timeseries import MinuteBar, TransactionRecord
 from .transport.async_ import AsyncTdxConnection
 from .transport.sync import KNOWN_HOSTS, TdxConnection, ping_all
@@ -362,6 +363,12 @@ class TdxClient:
                 
         return FundFlow(**stats)
 
+    def get_history_fund_flow(
+        self, market: Market, code: str, start: int, count: int
+    ) -> list[HistoricalFundFlow]:
+        """获取个股历史日线资金流向序列（Category 22）。"""
+        return self._execute(GetHistoryFundFlowCmd(market, code, start, count))
+
 
 # ============================================================
 # 异步客户端
@@ -663,4 +670,10 @@ class AsyncTdxClient:
             else:
                 stats[f"small_{direction}"] += amount
         return FundFlow(**stats)
+
+    async def get_history_fund_flow(
+        self, market: Market, code: str, start: int, count: int
+    ) -> list[HistoricalFundFlow]:
+        """获取个股历史日线资金流向序列。"""
+        return await self._execute(GetHistoryFundFlowCmd(market, code, start, count))
 

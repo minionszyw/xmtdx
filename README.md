@@ -106,6 +106,7 @@ client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
 | `get_transaction_data(market, code, start, count=800)` | 当日逐笔成交（分页） |
 | `get_history_transaction_data(market, code, date, start, count=800)` | 历史逐笔成交 |
 | `get_fund_flow(market, code)` | 当日资金流向统计（超大/大/中/小单） |
+| `get_history_fund_flow(market, code, start, count)` | 历史日线资金流向序列（Category 22） |
 | `get_xdxr_info(market, code)` | 除权除息历史 |
 | `get_finance_info(market, code)` | 最新财务数据 |
 | `get_company_info_category(market, code)` | 公司信息文件目录 |
@@ -203,6 +204,14 @@ name  category  count  codes
 ```
 super_in/out  large_in/out  medium_in/out  small_in/out
 main_net_inflow  total_net_inflow
+```
+
+### HistoricalFundFlow（历史资金流序列）
+
+```
+year  month  day
+super_in/out  large_in/out  medium_in/out  small_in/out
+main_net_inflow
 ```
 
 ## 修复的 pytdx Bug
