@@ -24,7 +24,7 @@ from .models.enums import KlineCategory, Market
 from .models.finance import CompanyInfoCategory, FinanceInfo, TdxBlock, XdxrRecord
 from .models.quote import SecurityQuote
 from .models.security import SecurityInfo
-from .models.stats import MarketStat
+from .models.stats import FundFlow, MarketStat
 from .models.timeseries import MinuteBar, TransactionRecord
 from .transport.async_ import AsyncTdxConnection
 from .transport.sync import KNOWN_HOSTS, TdxConnection, ping_all
@@ -158,7 +158,7 @@ class TdxClient:
             pass
 
         all_stocks: list[SecurityInfo] = []
-        for market in [Market.SH, Market.SZ]:
+        for market in [Market.SH, Market.SZ, Market.BJ]:
             count = self.get_security_count(market)
             for start in range(0, count, 1000):
                 stocks = self.get_security_list(market, start)
@@ -170,8 +170,12 @@ class TdxClient:
                         if s.code.startswith(("60", "68")):
                             is_a_share = True
                     elif market == Market.SZ:
-                        # 深市 A 股：00xxxx (主板), 30xxxx (创业板)
+                        # 深市 A 股：00xxxx, 30xxxx
                         if s.code.startswith(("00", "30")):
+                            is_a_share = True
+                    elif market == Market.BJ:
+                        # 京市 A 股：8xxxxx, 43xxxx, 92xxxx
+                        if s.code.startswith(("8", "43", "92")):
                             is_a_share = True
                     
                     if is_a_share:
@@ -322,6 +326,42 @@ class TdxClient:
             total_volume=q.vol,
         )
 
+    def get_fund_flow(self, market: Market, code: str) -> FundFlow:
+        """获取个股当日资金流向分布（基于 L1 逐笔数据统计）。"""
+        # 1. 拉取当日全量分笔 (TDX L1 最多支持约 2000-4000 条，通常足够 A 股当日统计)
+        all_recs: list[TransactionRecord] = []
+        for start in [0, 2000, 4000]:
+            recs = self.get_transaction_data(market, code, start, 2000)
+            if not recs:
+                break
+            all_recs.extend(recs)
+            if len(recs) < 2000:
+                break
+        
+        # 2. 统计逻辑
+        # A 股标准：超大(>100w), 大单(20w-100w), 中单(4w-20w), 小单(<4w)
+        stats = {
+            "super_in": 0.0, "large_in": 0.0, "medium_in": 0.0, "small_in": 0.0,
+            "super_out": 0.0, "large_out": 0.0, "medium_out": 0.0, "small_out": 0.0,
+        }
+        
+        for r in all_recs:
+            amount = r.price * r.vol * 100.0 # A股 1手=100股
+            direction = "in" if r.buyorsell == 0 else "out" if r.buyorsell == 1 else None
+            if not direction:
+                continue
+                
+            if amount >= 1000000:
+                stats[f"super_{direction}"] += amount
+            elif amount >= 200000:
+                stats[f"large_{direction}"] += amount
+            elif amount >= 40000:
+                stats[f"medium_{direction}"] += amount
+            else:
+                stats[f"small_{direction}"] += amount
+                
+        return FundFlow(**stats)
+
 
 # ============================================================
 # 异步客户端
@@ -463,7 +503,7 @@ class AsyncTdxClient:
             pass
 
         all_stocks: list[SecurityInfo] = []
-        for market in [Market.SH, Market.SZ]:
+        for market in [Market.SH, Market.SZ, Market.BJ]:
             count = await self.get_security_count(market)
             for start in range(0, count, 1000):
                 stocks = await self.get_security_list(market, start)
@@ -474,6 +514,9 @@ class AsyncTdxClient:
                             is_a_share = True
                     elif market == Market.SZ:
                         if s.code.startswith(("00", "30")):
+                            is_a_share = True
+                    elif market == Market.BJ:
+                        if s.code.startswith(("8", "43", "92")):
                             is_a_share = True
                     
                     if is_a_share:
@@ -590,4 +633,34 @@ class AsyncTdxClient:
             total_amount=q.amount,
             total_volume=q.vol,
         )
+
+    async def get_fund_flow(self, market: Market, code: str) -> FundFlow:
+        """获取个股当日资金流向分布。"""
+        all_recs: list[TransactionRecord] = []
+        for start in [0, 2000, 4000]:
+            recs = await self.get_transaction_data(market, code, start, 2000)
+            if not recs:
+                break
+            all_recs.extend(recs)
+            if len(recs) < 2000:
+                break
+        
+        stats = {
+            "super_in": 0.0, "large_in": 0.0, "medium_in": 0.0, "small_in": 0.0,
+            "super_out": 0.0, "large_out": 0.0, "medium_out": 0.0, "small_out": 0.0,
+        }
+        for r in all_recs:
+            amount = r.price * r.vol * 100.0
+            direction = "in" if r.buyorsell == 0 else "out" if r.buyorsell == 1 else None
+            if not direction:
+                continue
+            if amount >= 1000000:
+                stats[f"super_{direction}"] += amount
+            elif amount >= 200000:
+                stats[f"large_{direction}"] += amount
+            elif amount >= 40000:
+                stats[f"medium_{direction}"] += amount
+            else:
+                stats[f"small_{direction}"] += amount
+        return FundFlow(**stats)
 

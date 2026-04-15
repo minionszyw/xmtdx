@@ -6,6 +6,7 @@ from enum import IntEnum
 class Market(IntEnum):
     SZ = 0  # 深圳
     SH = 1  # 上海
+    BJ = 2  # 北京
 
 
 class KlineCategory(IntEnum):
