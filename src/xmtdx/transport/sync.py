@@ -126,7 +126,15 @@ class TdxConnection:
             sock.close()
             raise TdxConnectionError(f"无法连接 {self.host}:{self.port}: {e}") from e
         self._sock = sock
-        self._send_setup()
+        try:
+            self._send_setup()
+        except Exception:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            self._sock = None
+            raise
 
     def close(self) -> None:
         """关闭连接。"""

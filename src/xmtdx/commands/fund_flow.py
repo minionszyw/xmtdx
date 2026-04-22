@@ -52,8 +52,7 @@ class GetHistoryFundFlowCmd(BaseCommand[list[HistoricalFundFlow]]):
             
             # 记录格式：4字节日期 + 8个4字节自定义浮点金额
             # [0]日期, [1..4]流入(超/大/中/小), [5..8]流出(超/大/中/小)
-            # 这里的 i 是 uint32 原始字节，随后需用 _decode_volume 解码
-            raw_data = struct.unpack("<Iiiiiiiii", body[pos:pos+36])
+            raw_data = struct.unpack("<IIIIIIIII", body[pos:pos+36])
             
             raw_date = raw_data[0]
             year = raw_date // 10000

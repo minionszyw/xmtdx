@@ -1,6 +1,7 @@
 """协议底层修复验证（针对 2026-04-15 审查结论）。"""
 
 import struct
+from unittest.mock import patch
 
 from xmtdx.codec.price_rules import compute_price_limits
 from xmtdx.commands.fund_flow import GetHistoryFundFlowCmd
@@ -93,6 +94,14 @@ def test_security_quotes_limit_mapping():
     assert q.pre_close == 10.05
 
 
+def test_security_quotes_server_time_format():
+    """服务器时间应按“小时 + 百万分之一小时”统一解码。"""
+    from xmtdx.commands.security_quotes import _format_server_time
+
+    assert _format_server_time(9500000) == "09:30:00.000"
+    assert _format_server_time(14999212) == "14:59:57.163"
+
+
 def test_compute_price_limits_for_stocks():
     """普通股票 / ST / 创业板 / 科创板 / 北交所规则应可正确计算。"""
     assert compute_price_limits(Market.SH, "600000", "浦发银行", 10.05) == (11.06, 9.05)
@@ -123,3 +132,32 @@ def test_compute_price_limits_for_newly_listed_stocks():
     assert compute_price_limits(
         Market.BJ, "920002", "北交所新股", 84.36, listed_days=2
     ) == (109.67, 59.05)
+
+
+def test_history_fund_flow_uses_uint32_volume_words():
+    """历史资金流金额字段必须按 uint32 传给 _decode_volume。"""
+    raw_words = [
+        0x80000001,
+        0xFFFFFFFF,
+        0x7FFFFFFF,
+        0x90000000,
+        0xA0000000,
+        0xB0000000,
+        0xC0000000,
+        0xD0000000,
+    ]
+    body = bytearray(9)
+    body.extend(struct.pack("<H", 1))
+    body.extend(struct.pack("<IIIIIIIII", 20250108, *raw_words))
+
+    seen: list[int] = []
+
+    def fake_decode(raw: int) -> float:
+        seen.append(raw)
+        return float(raw)
+
+    with patch("xmtdx.commands.fund_flow._decode_volume", side_effect=fake_decode):
+        records = GetHistoryFundFlowCmd(Market.SH, "600000", 0, 1).parse_response(bytes(body))
+
+    assert seen == raw_words
+    assert records[0].small_out == float(raw_words[-1])

@@ -4,6 +4,7 @@ import struct
 from unittest.mock import patch
 
 from xmtdx import Market, TdxClient
+from xmtdx.client import _classify_fund_flow
 from xmtdx.models.bar import SecurityBar
 from xmtdx.models.quote import SecurityQuote
 from xmtdx.models.security import SecurityInfo
@@ -18,7 +19,7 @@ def test_get_fund_flow_logic(_mock_conn_cls):
     
     # 构造模拟 Tick 数据
     mock_recs = [
-        TransactionRecord(10, 0, 100.0, 100, 0, 0), # super_in (100*100*100 = 100w)
+        TransactionRecord(10, 0, 100.0, 101, 0, 0), # super_in (100*101*100 = 101w)
         TransactionRecord(10, 1, 10.0, 250, 1, 0),  # large_out (10*250*100 = 25w)
         TransactionRecord(10, 2, 10.0, 10, 0, 0),   # small_in (10*10*100 = 1w)
     ]
@@ -26,10 +27,24 @@ def test_get_fund_flow_logic(_mock_conn_cls):
     with patch.object(TdxClient, "get_transaction_data", return_value=mock_recs):
         flow = client.get_fund_flow(Market.SH, "600000")
         
-        assert flow.super_in == 1000000.0
+        assert flow.super_in == 1010000.0
         assert flow.large_out == 250000.0
         assert flow.small_in == 10000.0
-        assert flow.main_net_inflow == 1000000.0 - 250000.0
+        assert flow.main_net_inflow == 1010000.0 - 250000.0
+
+
+def test_classify_fund_flow_exact_thresholds_use_lower_bucket():
+    """恰好命中阈值时，应落入较低一档。"""
+    flow = _classify_fund_flow([
+        TransactionRecord(10, 0, 100.0, 100, 0, 0),  # 100w -> large
+        TransactionRecord(10, 1, 100.0, 20, 0, 0),   # 20w -> medium
+        TransactionRecord(10, 2, 100.0, 4, 0, 0),    # 4w -> small
+    ])
+
+    assert flow.super_in == 0.0
+    assert flow.large_in == 1000000.0
+    assert flow.medium_in == 200000.0
+    assert flow.small_in == 40000.0
 
 @patch("xmtdx.client.TdxConnection")
 def test_get_security_list_all_filtering(_mock_conn_cls):
@@ -103,11 +118,11 @@ def test_get_history_fund_flow_parsing():
     body = bytearray(9)
     body.extend(struct.pack("<H", 1)) # 1 record
     
-    # Record: Date(I) + 8 * custom_float(i)
+    # Record: Date(I) + 8 * custom_float(uint32)
     # 2025-01-08
     date = 20250108
     # 模拟 8 个流向金额
-    record = struct.pack("<Iiiiiiiii", date, 100, 200, 300, 400, 500, 600, 700, 800)
+    record = struct.pack("<IIIIIIIII", date, 100, 200, 300, 400, 500, 600, 700, 800)
     body.extend(record)
     
     cmd = GetHistoryFundFlowCmd(Market.SH, "600000", 0, 1)
@@ -130,7 +145,7 @@ def test_get_history_fund_flow_fallback(_mock_conn_cls):
     ]
     txn_map = {
         20250108: [
-            TransactionRecord(10, 0, 100.0, 100, 0, 0),
+            TransactionRecord(10, 0, 100.0, 101, 0, 0),
             TransactionRecord(10, 1, 10.0, 250, 1, 0),
         ],
         20250109: [
@@ -155,7 +170,7 @@ def test_get_history_fund_flow_fallback(_mock_conn_cls):
             year=2025,
             month=1,
             day=8,
-            super_in=1000000.0,
+            super_in=1010000.0,
             super_out=0.0,
             large_in=0.0,
             large_out=250000.0,

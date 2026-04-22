@@ -75,11 +75,11 @@ def _classify_fund_flow(records: list[TransactionRecord]) -> FundFlow:
         if not direction:
             continue
 
-        if amount >= 1_000_000:
+        if amount > 1_000_000:
             stats[f"super_{direction}"] += amount
-        elif amount >= 200_000:
+        elif amount > 200_000:
             stats[f"large_{direction}"] += amount
-        elif amount >= 40_000:
+        elif amount > 40_000:
             stats[f"medium_{direction}"] += amount
         else:
             stats[f"small_{direction}"] += amount

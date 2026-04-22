@@ -17,22 +17,14 @@ from .base import BaseCommand
 def _format_server_time(raw: int) -> str:
     """将 reversed_bytes0 整数转换为 HH:MM:SS.mmm 字符串。
 
-    方法来自 pytdx issue #187。raw 为 14999212 → "14:59:57.163"
+    该字段编码为“小时 + 百万分之一小时的小数部分”。
+    例如：14999212 → "14:59:57.163"
     """
-    s = str(raw)
-    if len(s) < 6:
-        return s
-    # 最后6位：前两位=秒，后四位=毫秒的某种编码
-    time_part = s[:-6] + ":"
-    last6 = int(s[-6:])
-    if int(s[-6:-4]) < 60:
-        time_part += s[-6:-4] + ":"
-        time_part += f"{last6 % 10000 * 60 / 10000.0:06.3f}"
-    else:
-        mins = last6 * 60 // 1000000
-        secs = (last6 * 60 % 1000000) * 60 / 1000000.0
-        time_part += f"{mins:02d}:{secs:06.3f}"
-    return time_part
+    hours, fractional_hour = divmod(raw, 1_000_000)
+    total_millis = fractional_hour * 3600 // 1000
+    minutes, remainder = divmod(total_millis, 60_000)
+    seconds, millis = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
 
 
 class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):

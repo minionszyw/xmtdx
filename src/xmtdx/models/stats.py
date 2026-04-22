@@ -20,9 +20,9 @@ class FundFlow:
     
     # 流入项 (Buy)
     super_in: float   # 超大单流入 (>100万)
-    large_in: float   # 大单流入 (20万-100万)
-    medium_in: float  # 中单流入 (4万-20万)
-    small_in: float   # 小单流入 (<4万)
+    large_in: float   # 大单流入 (>20万 且 <=100万)
+    medium_in: float  # 中单流入 (>4万 且 <=20万)
+    small_in: float   # 小单流入 (<=4万)
     
     # 流出项 (Sell)
     super_out: float
