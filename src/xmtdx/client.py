@@ -1,9 +1,11 @@
 """高层行情 API：TdxClient（同步）和 AsyncTdxClient（asyncio）。"""
 
 import asyncio
+from datetime import datetime
 from collections.abc import Awaitable, Callable
 from types import TracebackType
 from typing import TypeVar
+from zoneinfo import ZoneInfo
 
 from .codec.block import parse_block_dat
 from .codec.industry import parse_tdxhy_cfg
@@ -34,6 +36,11 @@ from .transport.sync import KNOWN_HOSTS, TdxConnection, ping_all
 
 _DEFAULT_PORT = 7709
 _T = TypeVar("_T")
+_SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _today_in_shanghai() -> int:
+    return int(datetime.now(_SHANGHAI_TZ).strftime("%Y%m%d"))
 
 
 def _record_signature(
@@ -332,6 +339,13 @@ class TdxClient:
 
     def get_minute_time_data(self, market: Market, code: str) -> list[MinuteBar]:
         """获取今日分时数据（240条）。"""
+        today = _today_in_shanghai()
+        try:
+            bars = self.get_history_minute_time_data(market, code, today)
+            if bars:
+                return bars
+        except Exception:
+            pass
         return self._execute(GetMinuteTimeDataCmd(market, code))
 
     def get_history_minute_time_data(
@@ -742,6 +756,13 @@ class AsyncTdxClient:
         return await self._execute(GetIndexBarsCmd(market, code, category, start, count))
 
     async def get_minute_time_data(self, market: Market, code: str) -> list[MinuteBar]:
+        today = _today_in_shanghai()
+        try:
+            bars = await self.get_history_minute_time_data(market, code, today)
+            if bars:
+                return bars
+        except Exception:
+            pass
         return await self._execute(GetMinuteTimeDataCmd(market, code))
 
     async def get_history_minute_time_data(

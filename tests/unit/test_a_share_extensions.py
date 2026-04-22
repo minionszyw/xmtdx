@@ -1,14 +1,16 @@
 """针对本轮 A 股增强功能的单元测试。"""
 
+import asyncio
 import struct
 from unittest.mock import patch
 
-from xmtdx import Market, TdxClient
+from xmtdx import AsyncTdxClient, Market, TdxClient
 from xmtdx.client import _classify_fund_flow
 from xmtdx.models.bar import SecurityBar
 from xmtdx.models.quote import SecurityQuote
 from xmtdx.models.security import SecurityInfo
 from xmtdx.models.stats import HistoricalFundFlow
+from xmtdx.models.timeseries import MinuteBar
 from xmtdx.models.timeseries import TransactionRecord
 
 
@@ -219,3 +221,70 @@ def test_get_price_limits_uses_listing_window(_mock_conn_cls):
             11.0,
             9.0,
         )
+
+
+@patch("xmtdx.client.TdxConnection")
+def test_get_minute_time_data_prefers_history_endpoint(_mock_conn_cls):
+    """今日分时优先走历史分时接口，规避当前分时协议歧义。"""
+    client = TdxClient("127.0.0.1")
+    expected = [MinuteBar(price=9.7, vol=13694)]
+
+    with patch("xmtdx.client._today_in_shanghai", return_value=20260422), patch.object(
+        TdxClient,
+        "get_history_minute_time_data",
+        return_value=expected,
+    ) as mock_history, patch.object(
+        TdxClient,
+        "_execute",
+        side_effect=AssertionError("should not hit current-minute command"),
+    ):
+        result = client.get_minute_time_data(Market.SH, "600000")
+
+    mock_history.assert_called_once_with(Market.SH, "600000", 20260422)
+    assert result == expected
+
+
+@patch("xmtdx.client.TdxConnection")
+def test_get_minute_time_data_falls_back_to_current_endpoint(_mock_conn_cls):
+    """历史分时失败时，仍回退到原今日分时命令。"""
+    client = TdxClient("127.0.0.1")
+    fallback = [MinuteBar(price=9.61, vol=10698)]
+
+    with patch("xmtdx.client._today_in_shanghai", return_value=20260422), patch.object(
+        TdxClient,
+        "get_history_minute_time_data",
+        side_effect=RuntimeError("history unavailable"),
+    ) as mock_history, patch.object(
+        TdxClient,
+        "_execute",
+        return_value=fallback,
+    ) as mock_execute:
+        result = client.get_minute_time_data(Market.SH, "600000")
+
+    mock_history.assert_called_once_with(Market.SH, "600000", 20260422)
+    mock_execute.assert_called_once()
+    assert result == fallback
+
+
+def test_async_get_minute_time_data_prefers_history_endpoint():
+    """异步客户端应与同步客户端保持同一回退策略。"""
+    expected = [MinuteBar(price=9.7, vol=13694)]
+
+    async def run_test() -> None:
+        with patch("xmtdx.client.AsyncTdxConnection"):
+            client = AsyncTdxClient("127.0.0.1")
+            with patch("xmtdx.client._today_in_shanghai", return_value=20260422), patch.object(
+                AsyncTdxClient,
+                "get_history_minute_time_data",
+                return_value=expected,
+            ) as mock_history, patch.object(
+                AsyncTdxClient,
+                "_execute",
+                side_effect=AssertionError("should not hit current-minute command"),
+            ):
+                result = await client.get_minute_time_data(Market.SH, "600000")
+
+        mock_history.assert_called_once_with(Market.SH, "600000", 20260422)
+        assert result == expected
+
+    asyncio.run(run_test())
