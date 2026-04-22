@@ -286,6 +286,14 @@ def test_xdxr_info_parse():
     dates = {(r.year, r.month, r.day) for r in recs}
     assert len(dates) > 1, "All records have the same date — Bug #1 not fixed!"
 
+    # category == 1 字段应已从“每10股”归一化为“每股”
+    cash = next(r for r in recs if (r.year, r.month, r.day, r.category) == (2000, 7, 6, 1))
+    assert abs(cash.fenhong - 0.15) < 1e-6
+
+    bonus = next(r for r in recs if (r.year, r.month, r.day, r.category) == (2002, 8, 22, 1))
+    assert abs(bonus.fenhong - 0.2) < 1e-6
+    assert abs(bonus.songzhuangu - 0.5) < 1e-6
+
     assert all(len(r._raw) > 0 for r in recs)
 
     # share count decode: 通达信自定义浮点，单位万股，与 FinanceInfo.zong_guben/10000 一致
@@ -295,6 +303,26 @@ def test_xdxr_info_parse():
     # 与 FinanceInfo.zong_guben 33_305_837_500 ÷ 10000 完全吻合
     assert last.hou_zongguben is not None
     assert abs(last.hou_zongguben - 3_330_583.75) < 1.0
+
+
+def test_xdxr_info_category_1_normalizes_per_10_share_fields():
+    from xmtdx.commands.xdxr_info import GetXdxrInfoCmd
+    from xmtdx.models.enums import Market
+
+    body = bytearray(b"\x00" * 9)
+    body.extend(struct.pack("<H", 1))
+    body.extend(struct.pack("<B6s", 1, b"600000"))
+    body.extend(b"\x00")
+    body.extend(struct.pack("<I", 20200102))
+    body.extend(struct.pack("<B", 1))
+    body.extend(struct.pack("<ffff", 2.0, 8.0, 5.0, 3.0))
+
+    rec = GetXdxrInfoCmd(Market.SH, "600000").parse_response(bytes(body))[0]
+
+    assert abs(rec.fenhong - 0.2) < 1e-6
+    assert abs(rec.songzhuangu - 0.5) < 1e-6
+    assert abs(rec.peigu - 0.3) < 1e-6
+    assert abs(rec.peigujia - 8.0) < 1e-6
 
 
 # ---------------------------------------------------------------------------

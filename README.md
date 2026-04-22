@@ -193,6 +193,32 @@ qian_zongguben  hou_zongguben        # 单位：万股
 _raw
 ```
 
+`category == 1` 时，`fenhong / songzhuangu / peigu` 已归一化为“每股”口径。
+
+### 复权公式
+
+若在仓库外自行计算前复权 / 后复权，建议仅使用 `category == 1` 的 `xdxr`
+记录（现金分红 / 送转 / 配股）参与因子计算：
+
+- `cash = fenhong`
+- `bonus = songzhuangu`
+- `rights = peigu`
+- `rights_price = peigujia`
+
+单次除权除息事件的价格因子可写为：
+
+```text
+factor = (pre_close - cash + rights * rights_price) / (1 + bonus + rights)
+```
+
+其中 `pre_close` 为事件前一交易日的未复权收盘价。
+
+- 前复权：将事件日前的历史价格连续乘以各次 `factor`
+- 后复权：将事件日后的价格连续除以各次 `factor`
+
+当前建议只把 `category == 1` 用作复权；`2..14` 类事件仍更适合作为原始事件暴露，
+不建议直接纳入通用复权引擎。
+
 ### FinanceInfo（财务）
 
 流通股本、总股本、各省份/行业代码、资产负债表及利润表主要科目（30 个 float 字段）。

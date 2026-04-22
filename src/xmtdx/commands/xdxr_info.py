@@ -69,10 +69,10 @@ class GetXdxrInfoCmd(BaseCommand[list[XdxrRecord]]):
 
             if category == 1:
                 fenhong, peigujia, songzhuangu, peigu = struct.unpack("<ffff", chunk)
-                rec.fenhong = fenhong
+                rec.fenhong = _normalize_per_10_shares(fenhong)
                 rec.peigujia = peigujia
-                rec.songzhuangu = songzhuangu
-                rec.peigu = peigu
+                rec.songzhuangu = _normalize_per_10_shares(songzhuangu)
+                rec.peigu = _normalize_per_10_shares(peigu)
             elif category in (11, 12):
                 _, _, suogu, _ = struct.unpack("<IIfI", chunk)
                 rec.suogu = suogu
@@ -100,3 +100,8 @@ def _decode_share_count(raw: int) -> float:
     解码结果单位为万股，与 FinanceInfo.zong_guben / 10000 一致。
     """
     return _decode_volume(raw)
+
+
+def _normalize_per_10_shares(value: float) -> float:
+    """将协议里的“每10股”口径归一化为“每股”口径。"""
+    return value / 10.0

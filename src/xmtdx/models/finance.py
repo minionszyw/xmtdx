@@ -22,10 +22,10 @@ class XdxrRecord:
     name: str       # 事件类型名称
 
     # category == 1（除权除息）
-    fenhong: float | None = None      # 每股分红（元）
-    peigujia: float | None = None     # 配股价（元）
-    songzhuangu: float | None = None  # 送转股比例
-    peigu: float | None = None        # 配股比例
+    fenhong: float | None = None      # 每股分红（元；协议原值按每10股）
+    peigujia: float | None = None     # 配股价（元/股）
+    songzhuangu: float | None = None  # 每股送转股比例（协议原值按每10股）
+    peigu: float | None = None        # 每股配股比例（协议原值按每10股）
 
     # category in [11, 12]（扩缩股）
     suogu: float | None = None        # 缩股比例
