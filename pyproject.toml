@@ -4,8 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xmtdx"
-version = "0.1.0"
+version = "0.1.1"
 description = "通达信 TCP 协议 A 股行情数据客户端"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
