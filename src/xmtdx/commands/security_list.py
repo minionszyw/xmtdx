@@ -1,12 +1,13 @@
 """获取证券列表命令（每页最多1000条，按 start 分页）。
 
 修复 pytdx Bug #2：GBK 解码使用 errors='replace'，截断多字节序列不再崩溃。
-修复 pytdx Bug #3：pre_close 使用 get_price 解码，而非 get_volume。
+修复 pytdx Bug #3：pre_close 保持使用通达信自定义浮点解码。
 """
 
 import struct
 
 from .._binary import slice_bytes, unpack_from
+from ..codec.volume import _decode_volume
 from ..models.enums import Market
 from ..models.security import SecurityInfo
 from .base import BaseCommand
@@ -48,10 +49,8 @@ class GetSecurityListCmd(BaseCommand[list[SecurityInfo]]):
             # Bug #2 修复：errors='replace' 避免截断 GBK 多字节序列时崩溃
             name = name_bytes.decode("gbk", errors="replace").rstrip("\x00")
 
-            # Bug #3 修复：pre_close 不用 get_volume（成交量解码），
-            # 而是直接将 uint32 当作价格整数（/ 100）
-            # 实际服务器返回的 pre_close_raw 是 price * 100 的整数
-            pre_close = pre_close_raw / 100.0
+            # pre_close_raw 与协议里的成交量/股本字段一样，使用通达信自定义浮点编码。
+            pre_close = _decode_volume(pre_close_raw)
 
             results.append(
                 SecurityInfo(

@@ -226,7 +226,7 @@ main_net_inflow
 |---|------|------|------|
 | 1 | `xdxr_info` | 循环内始终读 `body[:7]`，所有记录字段相同 | 改为从当前 `pos` 读取，pos 正确推进 |
 | 2 | `security_list` | GBK 解码截断时 crash | `decode('gbk', errors='replace')` |
-| 3 | `security_list` | `pre_close` 错用成交量解码函数 | 改用价格解码 |
+| 3 | `security_list` | `pre_close` 误当作整数价格 `/100` | 恢复为通达信自定义浮点解码 |
 | 4 | `transaction` | 最后一个字段被 `_` 丢弃 | 保留为 `unknown_last` |
 | 5 | `minute_time` | `reversed1` 字段被丢弃 | 保留为 `unknown_1` |
 | 6 | `xdxr_info` | 股本字段用 `float(uint32)` 直解，差约 374 倍 | 改用 `_decode_volume`（通达信自定义浮点），单位万股，与 `FinanceInfo` 完全吻合 |

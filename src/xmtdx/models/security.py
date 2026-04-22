@@ -14,7 +14,7 @@ class SecurityInfo:
     name: str          # 股票名称（GBK 解码，截断字节用 replacement char 替代）
     volunit: int       # 成交量单位（手 = volunit 股）
     decimal_point: int  # 价格小数位数
-    pre_close: float   # 昨收价（已修复 pytdx Bug #3：改用正确价格解码）
+    pre_close: float   # 昨收价（通达信自定义浮点解码）
 
     # 扩展字段（通过 get_security_list_all 关联 tdxhy.cfg 获得）
     industry_tdx: str = ""  # 通达信行业代码 (如 T1001)
