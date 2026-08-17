@@ -36,4 +36,7 @@ class TransactionRecord:
     # pytdx 中被丢弃的字段
     unknown_last: int = field(default=0, repr=False)
 
+    # 当日逐笔独有的成交笔数；历史逐笔协议不包含该字段。
+    num_orders: int | None = None
+
     _raw: bytes = field(default=b"", repr=False, compare=False)

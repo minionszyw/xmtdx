@@ -6,6 +6,7 @@
 import struct
 
 from ..exceptions import TdxDecodeError
+from ..validation import validate_filename
 from .base import BaseCommand
 
 
@@ -17,7 +18,7 @@ class GetBlockInfoMetaCmd(BaseCommand[tuple[int, str]]):
     """
 
     def __init__(self, filename: str) -> None:
-        self.filename = filename.encode("ascii")
+        self.filename = validate_filename(filename, 40, "ascii")
 
     def build_request(self) -> bytes:
         # 固定头 12 字节
@@ -44,7 +45,11 @@ class GetBlockInfoCmd(BaseCommand[bytes]):
     """
 
     def __init__(self, filename: str, start: int, length: int) -> None:
-        self.filename = filename.encode("ascii")
+        self.filename = validate_filename(filename, 100, "ascii")
+        if start < 0:
+            raise ValueError("start 不能为负")
+        if not 1 <= length <= 30000:
+            raise ValueError("length 必须在 1..30000 范围内")
         self.start = start
         self.length = length
 

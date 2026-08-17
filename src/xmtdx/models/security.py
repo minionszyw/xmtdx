@@ -16,6 +16,9 @@ class SecurityInfo:
     decimal_point: int  # 价格小数位数
     pre_close: float   # 昨收价（通达信自定义浮点解码）
 
+    unknown_1: bytes = field(default=b"", repr=False)
+    unknown_2: bytes = field(default=b"", repr=False)
+
     # 扩展字段（通过 get_security_list_all 关联 tdxhy.cfg 获得）
     industry_tdx: str = ""  # 通达信行业代码 (如 T1001)
     industry_sw: str = ""   # 申万行业代码 (如 X500102)

@@ -6,6 +6,7 @@ from .._binary import slice_bytes, unpack_from
 from ..exceptions import TdxDecodeError
 from ..models.enums import Market
 from ..models.finance import CompanyInfoCategory
+from ..validation import validate_code, validate_filename, validate_uint16
 from .base import BaseCommand
 
 
@@ -14,7 +15,7 @@ class GetCompanyInfoCategoryCmd(BaseCommand[list[CompanyInfoCategory]]):
 
     def __init__(self, market: Market, code: str) -> None:
         self.market = market
-        self.code = code.encode("utf-8")
+        self.code = validate_code(code).encode("ascii")
 
     def build_request(self) -> bytes:
         header = bytes.fromhex("0c0f109b00010e000e00cf02".replace(" ", ""))
@@ -44,6 +45,7 @@ class GetCompanyInfoCategoryCmd(BaseCommand[list[CompanyInfoCategory]]):
                 filename=_decode(filename_b),
                 start=start,
                 length=length,
+                _raw=raw,
             ))
 
         return results
@@ -56,10 +58,12 @@ class GetCompanyInfoContentCmd(BaseCommand[str]):
         self, market: Market, code: str, filename: str, offset: int, length: int
     ) -> None:
         self.market = market
-        self.code = code.encode("utf-8")
-        self.filename = filename.encode("gbk")
+        self.code = validate_code(code).encode("ascii")
+        self.filename = validate_filename(filename, 80, "gbk")
+        if offset < 0:
+            raise ValueError("offset 不能为负")
         self.offset = offset
-        self.length = length
+        self.length = validate_uint16(length, "length", minimum=1)
 
     def build_request(self) -> bytes:
         fname_padded = (self.filename + b"\x00" * 80)[:80]

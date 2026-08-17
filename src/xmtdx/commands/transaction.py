@@ -10,6 +10,7 @@ from ..codec.datetime_ import get_time
 from ..codec.price import get_price
 from ..models.enums import Market
 from ..models.timeseries import TransactionRecord
+from ..validation import validate_code, validate_count, validate_date, validate_uint16
 from .base import BaseCommand
 
 
@@ -18,9 +19,9 @@ class GetTransactionDataCmd(BaseCommand[list[TransactionRecord]]):
 
     def __init__(self, market: Market, code: str, start: int, count: int = 800) -> None:
         self.market = market
-        self.code = code.encode("utf-8")
-        self.start = start
-        self.count = count
+        self.code = validate_code(code).encode("ascii")
+        self.start = validate_uint16(start, "start")
+        self.count = validate_count(count, 2000)
 
     def build_request(self) -> bytes:
         header = bytes.fromhex("0c170801010 10e000e00c50f".replace(" ", ""))
@@ -39,10 +40,10 @@ class GetHistoryTransactionDataCmd(BaseCommand[list[TransactionRecord]]):
         self, market: Market, code: str, date: int, start: int, count: int = 800
     ) -> None:
         self.market = market
-        self.code = code.encode("utf-8")
-        self.date = date
-        self.start = start
-        self.count = count
+        self.code = validate_code(code).encode("ascii")
+        self.date = validate_date(date)
+        self.start = validate_uint16(start, "start")
+        self.count = validate_count(count, 2000)
 
     def build_request(self) -> bytes:
         # 历史逐笔：header + pack("<IH6sHH", date, market, code, start, count)
@@ -68,14 +69,15 @@ def _parse_transaction_body(body: bytes) -> list[TransactionRecord]:
         hour, minute, pos = get_time(body, pos)
         price_diff, pos = get_price(body, pos)
         vol, pos = get_price(body, pos)
-        _num_orders, pos = get_price(body, pos)  # 成交笔数（当日独有）
+        num_orders, pos = get_price(body, pos)  # 成交笔数（当日独有）
         buyorsell, pos = get_price(body, pos)
         unknown_last, pos = get_price(body, pos)  # Bug #4 修复：不再丢弃
         last_price += price_diff
         records.append(TransactionRecord(
             hour=hour, minute=minute,
             price=last_price / 100.0, vol=vol, buyorsell=buyorsell,
-            unknown_last=unknown_last, _raw=body[record_start:pos],
+            unknown_last=unknown_last, num_orders=num_orders,
+            _raw=body[record_start:pos],
         ))
 
     return records
@@ -99,7 +101,8 @@ def _parse_history_transaction_body(body: bytes) -> list[TransactionRecord]:
         records.append(TransactionRecord(
             hour=hour, minute=minute,
             price=last_price / 100.0, vol=vol, buyorsell=buyorsell,
-            unknown_last=unknown_last, _raw=body[record_start:pos],
+            unknown_last=unknown_last, num_orders=None,
+            _raw=body[record_start:pos],
         ))
 
     return records

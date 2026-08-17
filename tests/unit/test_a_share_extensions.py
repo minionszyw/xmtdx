@@ -2,7 +2,9 @@
 
 import asyncio
 import struct
+from datetime import datetime
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from xmtdx import AsyncTdxClient, Market, TdxClient
 from xmtdx.client import _classify_fund_flow
@@ -10,8 +12,7 @@ from xmtdx.models.bar import SecurityBar
 from xmtdx.models.quote import SecurityQuote
 from xmtdx.models.security import SecurityInfo
 from xmtdx.models.stats import HistoricalFundFlow
-from xmtdx.models.timeseries import MinuteBar
-from xmtdx.models.timeseries import TransactionRecord
+from xmtdx.models.timeseries import MinuteBar, TransactionRecord
 
 
 @patch("xmtdx.client.TdxConnection")
@@ -229,7 +230,10 @@ def test_get_minute_time_data_prefers_history_endpoint(_mock_conn_cls):
     client = TdxClient("127.0.0.1")
     expected = [MinuteBar(price=9.7, vol=13694)]
 
-    with patch("xmtdx.client._today_in_shanghai", return_value=20260422), patch.object(
+    with patch("xmtdx.client._today_in_shanghai", return_value=20260422), patch(
+        "xmtdx.client._now_in_shanghai",
+        return_value=datetime(2026, 4, 22, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    ), patch.object(
         TdxClient,
         "get_history_minute_time_data",
         return_value=expected,
@@ -250,7 +254,10 @@ def test_get_minute_time_data_falls_back_to_current_endpoint(_mock_conn_cls):
     client = TdxClient("127.0.0.1")
     fallback = [MinuteBar(price=9.61, vol=10698)]
 
-    with patch("xmtdx.client._today_in_shanghai", return_value=20260422), patch.object(
+    with patch("xmtdx.client._today_in_shanghai", return_value=20260422), patch(
+        "xmtdx.client._now_in_shanghai",
+        return_value=datetime(2026, 4, 22, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    ), patch.object(
         TdxClient,
         "get_history_minute_time_data",
         side_effect=RuntimeError("history unavailable"),
@@ -258,7 +265,7 @@ def test_get_minute_time_data_falls_back_to_current_endpoint(_mock_conn_cls):
         TdxClient,
         "_execute",
         return_value=fallback,
-    ) as mock_execute:
+    ) as mock_execute, patch.object(TdxClient, "get_security_quotes", return_value=[]):
         result = client.get_minute_time_data(Market.SH, "600000")
 
     mock_history.assert_called_once_with(Market.SH, "600000", 20260422)

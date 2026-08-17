@@ -61,6 +61,7 @@ def parse_block_dat(data: bytes, filename: str = "") -> list["TdxBlock"]:
             category=category,
             count=stock_count,
             codes=codes,
+            _raw=data[pos:pos + 2813],
         ))
 
         # 跳过整个 2813 字节的记录块

@@ -18,6 +18,8 @@ class BaseCommand(ABC, Generic[T]):
       parse_response() → 从解压后的 body 返回强类型结果
     """
 
+    reusable_connection: bool = True
+
     @abstractmethod
     def build_request(self) -> bytes:
         """构造请求包（含完整帧头）。"""

@@ -26,3 +26,11 @@ class SecurityBar:
     @property
     def datetime_str(self) -> str:
         return f"{self.year}-{self.month:02d}-{self.day:02d} {self.hour:02d}:{self.minute:02d}"
+
+
+@dataclass
+class IndexBar(SecurityBar):
+    """指数 K 线；协议在普通 K 线尾部额外携带涨跌家数。"""
+
+    up_count: int = 0
+    down_count: int = 0

@@ -18,7 +18,7 @@ class KlineCategory(IntEnum):
     WEEK = 5
     MONTH = 6
     MIN_1 = 7
-    MIN_3 = 8  # 通达信内部用，实际同 MIN_1
-    YEAR = 9
+    MIN_1_ALT = 8  # 另一种 1 分钟线编码，不是 3 分钟线
+    DAY_ALT = 9    # 另一种日线编码，不是年线
     SEASON = 10
-    YEAR_ALT = 11
+    YEAR = 11

@@ -8,9 +8,10 @@ import struct
 from .._binary import unpack_from
 from ..codec.price import get_price
 from ..codec.volume import get_volume
-from ..exceptions import TdxDecodeError
+from ..exceptions import TdxDecodeError, TdxResponseError
 from ..models.enums import Market
 from ..models.quote import SecurityQuote
+from ..validation import validate_code
 from .base import BaseCommand
 
 
@@ -39,7 +40,9 @@ class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
             raise ValueError("stocks 不能为空")
         if len(stocks) > 80:
             raise ValueError("单次最多查询 80 只股票")
-        self.stocks = stocks
+        if len(set(stocks)) != len(stocks):
+            raise ValueError("stocks 不能包含重复证券")
+        self.stocks = [(market, validate_code(code)) for market, code in stocks]
 
     def build_request(self) -> bytes:
         n = len(self.stocks)
@@ -189,8 +192,11 @@ class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
                     rise_speed=rise_speed_raw / 100.0,
                     limit_up=None,
                     limit_down=None,
+                    unknown_0=unknown_0,
+                    unknown_1=unknown_1,
                     unknown_2=unknown_2,
                     unknown_3=unknown_3,
+                    unknown_4=unknown_4,
                     unknown_5=unknown_5,
                     unknown_6=unknown_6,
                     unknown_7=unknown_7,
@@ -200,4 +206,10 @@ class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
                 )
             )
 
+        expected = [(market, code) for market, code in self.stocks]
+        actual = [(quote.market, quote.code) for quote in results]
+        if actual != expected:
+            raise TdxResponseError(
+                f"security_quotes 响应证券不匹配: expected={expected}, actual={actual}"
+            )
         return results

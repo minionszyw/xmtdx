@@ -9,6 +9,7 @@ from .._binary import unpack_from
 from ..codec.price import get_price
 from ..models.enums import Market
 from ..models.timeseries import MinuteBar
+from ..validation import validate_code, validate_date
 from .base import BaseCommand
 
 
@@ -17,7 +18,7 @@ class GetMinuteTimeDataCmd(BaseCommand[list[MinuteBar]]):
 
     def __init__(self, market: Market, code: str) -> None:
         self.market = market
-        self.code = code.encode("utf-8")
+        self.code = validate_code(code).encode("ascii")
 
     def build_request(self) -> bytes:
         header = bytes.fromhex("0c1b08000101 0e000e001d05".replace(" ", ""))
@@ -32,8 +33,8 @@ class GetHistoryMinuteTimeDataCmd(BaseCommand[list[MinuteBar]]):
 
     def __init__(self, market: Market, code: str, date: int) -> None:
         self.market = market
-        self.code = code.encode("utf-8")
-        self.date = date
+        self.code = validate_code(code).encode("ascii")
+        self.date = validate_date(date)
 
     def build_request(self) -> bytes:
         # 历史分时：header + pack("<IB6s", date, market, code)

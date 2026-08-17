@@ -2,9 +2,12 @@
 
 import struct
 
+from .._binary import slice_bytes, unpack_from
 from ..codec.volume import _decode_volume
+from ..exceptions import TdxDecodeError
 from ..models.enums import Market
 from ..models.stats import HistoricalFundFlow
+from ..validation import validate_code, validate_count, validate_uint16
 from .base import BaseCommand
 
 
@@ -13,9 +16,9 @@ class GetHistoryFundFlowCmd(BaseCommand[list[HistoricalFundFlow]]):
 
     def __init__(self, market: Market, code: str, start: int, count: int) -> None:
         self.market = market
-        self.code = code.encode("utf-8")
-        self.start = start
-        self.count = count
+        self.code = validate_code(code).encode("ascii")
+        self.start = validate_uint16(start, "start")
+        self.count = validate_count(count, 800)
 
     def build_request(self) -> bytes:
         # Header (12 bytes) + Payload (28 bytes) = 40 bytes
@@ -42,22 +45,22 @@ class GetHistoryFundFlowCmd(BaseCommand[list[HistoricalFundFlow]]):
         if len(body) < 11:
             return []
             
-        (num,) = struct.unpack("<H", body[9:11])
+        (num,) = unpack_from("<H", body, 9, "history_fund_flow header")
         pos = 11
         results = []
         
         for _ in range(num):
-            if len(body) < pos + 36:
-                break
-            
             # 记录格式：4字节日期 + 8个4字节自定义浮点金额
             # [0]日期, [1..4]流入(超/大/中/小), [5..8]流出(超/大/中/小)
-            raw_data = struct.unpack("<IIIIIIIII", body[pos:pos+36])
+            raw = slice_bytes(body, pos, 36, "history_fund_flow record")
+            raw_data = struct.unpack("<IIIIIIIII", raw)
             
             raw_date = raw_data[0]
             year = raw_date // 10000
             month = (raw_date // 100) % 100
             day = raw_date % 100
+            if not (1990 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31):
+                raise TdxDecodeError(f"history_fund_flow 非法日期: {raw_date}")
             
             results.append(HistoricalFundFlow(
                 year=year, month=month, day=day,
@@ -69,6 +72,7 @@ class GetHistoryFundFlowCmd(BaseCommand[list[HistoricalFundFlow]]):
                 large_out=_decode_volume(raw_data[6]),
                 medium_out=_decode_volume(raw_data[7]),
                 small_out=_decode_volume(raw_data[8]),
+                _raw=raw,
             ))
             pos += 36
             

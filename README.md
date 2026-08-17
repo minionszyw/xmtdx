@@ -1,6 +1,6 @@
 # xmtdx
 
-通达信 TCP 协议 A 股行情数据客户端，零运行时依赖。
+通达信私有 7709/TCP 行情协议的 A 股客户端实现，零运行时依赖。协议并无官方公开规范，字段与命令来自兼容实现、抓包和真实服务器交叉验证，因此属于兼容性逆向开发，不包含通达信客户端代码。
 
 pytdx 年久失修：多处已知解析 bug、Python 2 包袱、无类型注解、大量未知字段被静默丢弃。xmtdx 重新实现协议，修复已知 bug，保留全部原始字节与未知字段供后续逆向分析。
 
@@ -10,6 +10,8 @@ pytdx 年久失修：多处已知解析 bug、Python 2 包袱、无类型注解�
 - **同步 + asyncio 双接口**：`TdxClient` / `AsyncTdxClient`，commands 层不含任何 IO
 - **完整类型注解**：strict `mypy` + `ruff` 通过
 - **高可用传输**：同步/异步均支持 `ping_all()`、`from_best_host()`、断线自动重连
+- **响应语义校验**：校验证券身份、日期、OHLC、成交量和文件完整性，异常响应自动切换候选服务器
+- **批量与区间 API**：行情超过 80 只自动分片，K 线支持股票/指数自动路由和日期区间分页
 - **修复 pytdx 已知 bug**（见下文）
 - **保留原始字节**：每条数据记录含 `_raw: bytes`，未知字段以 `unknown_N` 命名而非丢弃
 - **保活心跳机制**：`AsyncTdxClient` 自动发送心跳包，确保长连接生产环境稳定性
@@ -76,8 +78,8 @@ for host, ms in results:
 with TdxClient.from_best_host(ping_timeout=5.0) as c:
     ...
 
-# asyncio 版本同样支持
-client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
+# asyncio 版本同样支持（工厂本身也要 await）
+client = await AsyncTdxClient.from_best_host(ping_timeout=5.0)
 ```
 
 内置服务器列表（`KNOWN_HOSTS`）：
@@ -99,10 +101,12 @@ client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
 | `get_security_list(market, start)` | 证券列表（每页 ~1000 条；BJ 当前不能稳定获取） |
 | `get_security_list_all()` | 沪深 A 股列表（自动挂载行业信息；BJ 暂未纳入） |
 | `get_market_stat()` | 全市场 A 股涨跌统计（家数、成交额） |
-| `get_security_quotes([(market, code), ...])` | 批量实时五档行情（最多 80 只/次） |
+| `get_security_quotes([(market, code), ...])` | 批量实时五档行情（任意数量，内部每 80 只分片） |
 | `get_price_limits(market, code, name, pre_close)` | 计算当前涨跌停价（自动处理上市初期无涨跌幅限制） |
 | `get_security_bars(market, code, category, start, count=800)` | K 线（股票） |
 | `get_index_bars(market, code, category, start, count=800)` | K 线（指数） |
+| `get_bars(market, code, category, start, count=800)` | 按代码自动路由股票/指数 K 线 |
+| `get_bars_range(market, code, start_date, end_date, category=DAY)` | 获取日期闭区间 K 线，自动分页、排序和去重 |
 | `get_minute_time_data(market, code)` | 今日分时（240 条） |
 | `get_history_minute_time_data(market, code, date)` | 历史某日分时，`date=YYYYMMDD` |
 | `get_transaction_data(market, code, start, count=800)` | 当日逐笔成交（分页） |
@@ -119,6 +123,9 @@ client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
 `AsyncTdxClient` 提供与同步版对应的查询方法与高可用入口，均为 `async def`。
 单个 `AsyncTdxClient` 仅维护一条 TCP 连接；并发调用会在连接内串行执行。
 
+所有 dataclass 结果可用 `to_dataframe(records)` 转为 DataFrame；需安装
+`xmtdx[pandas]`，默认不暴露 `_raw`，调试时可传 `include_raw=True`。
+
 ## 已知限制
 
 - `xmtdx` 当前不能稳定获取 BJ 证券列表；`get_security_count(Market.BJ)` 可用，但 `get_security_list(Market.BJ, start)` 经常超时，因此 `get_security_list_all()` 暂不纳入 BJ。
@@ -126,8 +133,8 @@ client = AsyncTdxClient.from_best_host(ping_timeout=5.0)
 ### KlineCategory
 
 ```
-MIN_1  MIN_3  MIN_5  MIN_15  MIN_30  MIN_60
-DAY  WEEK  MONTH  SEASON  YEAR  YEAR_ALT
+MIN_1  MIN_1_ALT  MIN_5  MIN_15  MIN_30  MIN_60
+DAY  DAY_ALT  WEEK  MONTH  SEASON  YEAR
 ```
 
 ## 数据模型
@@ -150,7 +157,7 @@ vol  cur_vol  amount  s_vol  b_vol
 bid1..bid5  bid_vol1..bid_vol5
 ask1..ask5  ask_vol1..ask_vol5
 rise_speed  limit_up  limit_down  server_time
-unknown_2..unknown_3  unknown_5..unknown_8
+unknown_0..unknown_8
 _raw
 ```
 
@@ -171,6 +178,7 @@ _raw
 ```
 hour  minute  price  vol
 buyorsell   # 0=买, 1=卖, 2=中性, 8=集合竞价
+num_orders  # 当日逐笔成交笔数；历史接口为 None
 unknown_last
 _raw
 ```
@@ -262,6 +270,9 @@ main_net_inflow
 | 5 | `minute_time` | `reversed1` 字段被丢弃 | 保留为 `unknown_1` |
 | 6 | `xdxr_info` | 股本字段用 `float(uint32)` 直解，差约 374 倍 | 改用 `_decode_volume`（通达信自定义浮点），单位万股，与 `FinanceInfo` 完全吻合 |
 | 7 | `security_quotes` | 涨停/跌停价映射错误或缺失 | 停止使用不可信协议位，改由业务规则计算 |
+| 8 | `index_bars` | 按股票记录长度解析，第二条起字段错位 | 每条额外消费并暴露 `up_count/down_count` |
+| 9 | `security_list` | 部分服务器单连接翻页会停滞 | 每页完成后主动换新连接 |
+| 10 | `transaction` | 当日 `num_orders` 被丢弃，分页全局去重误删合法同值成交 | 保留笔数，只消除相邻页边界重叠 |
 
 ## 架构
 
@@ -270,10 +281,13 @@ src/xmtdx/
 ├── client.py          # TdxClient / AsyncTdxClient（高层 API）
 ├── transport/
 │   ├── sync.py        # TdxConnection（socket）+ ping_host / ping_all
-│   └── async_.py      # AsyncTdxConnection（asyncio）
+│   ├── async_.py      # AsyncTdxConnection（asyncio）
+│   └── capture.py     # 请求/帧头/压缩体/解压体的诊断捕获
 ├── commands/          # 每条命令：build_request() + parse_response()，无 IO
 ├── codec/             # price / volume / datetime / frame 编解码
-└── models/            # 纯 dataclass，无业务逻辑
+├── models/            # 纯 dataclass，无业务逻辑
+├── validation.py      # 参数与响应语义校验
+└── dataframe.py       # 可选 pandas 适配
 ```
 
 commands 层不依赖 transport，可独立单测。transport 层负责 TCP、握手、帧解压、分发。
@@ -286,6 +300,9 @@ python -m pytest tests/unit/
 
 # 集成测试（需要网络，默认跳过）
 XMTDX_LIVE=1 python -m pytest tests/integration/
+
+# 较完整的在线能力矩阵（JSON 输出）
+python scripts/validate_live.py --json
 
 # 未知字段探测脚本
 python scripts/probe_unknowns.py
@@ -306,3 +323,5 @@ ruff check src/ tests/
 - **成交量编码**：4 字节自定义浮点（字节 3 = 指数，字节 0-2 = 精度），**不可用于价格字段**
 - **握手**：连接后必须顺序发送 3 条 setup 命令，响应丢弃
 - **价格存储**：整数 × 100，差分编码（相邻 tick 存 delta）
+
+各命令的支持和验证状态见 [协议覆盖矩阵](docs/protocol-coverage.md)。在线行情会受交易时段、服务器版本、标的停牌和服务器临时故障影响；“解析已覆盖”不等于任何时刻每台公共服务器都可用。

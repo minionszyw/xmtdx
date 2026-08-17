@@ -10,6 +10,7 @@ from .._binary import slice_bytes, unpack_from
 from ..codec.volume import _decode_volume
 from ..models.enums import Market
 from ..models.security import SecurityInfo
+from ..validation import validate_uint16
 from .base import BaseCommand
 
 _RECORD_SIZE = 29
@@ -18,9 +19,12 @@ _RECORD_SIZE = 29
 class GetSecurityListCmd(BaseCommand[list[SecurityInfo]]):
     """获取指定市场从 start 开始的证券列表。"""
 
+    # 部分公网节点在返回一次证券列表后不再响应同连接上的下一请求。
+    reusable_connection = False
+
     def __init__(self, market: Market, start: int) -> None:
         self.market = market
-        self.start = start
+        self.start = validate_uint16(start, "start")
 
     def build_request(self) -> bytes:
         # Header (12 bytes) + Payload (6 bytes) = 18 bytes
@@ -60,6 +64,8 @@ class GetSecurityListCmd(BaseCommand[list[SecurityInfo]]):
                     volunit=volunit,
                     decimal_point=decimal_point,
                     pre_close=pre_close,
+                    unknown_1=_unknown1,
+                    unknown_2=_unknown2,
                     _raw=raw,
                 )
             )

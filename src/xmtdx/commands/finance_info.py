@@ -3,9 +3,10 @@
 import struct
 
 from .._binary import slice_bytes, unpack_from
-from ..exceptions import TdxDecodeError
+from ..exceptions import TdxDecodeError, TdxResponseError
 from ..models.enums import Market
 from ..models.finance import FinanceInfo
+from ..validation import validate_code
 from .base import BaseCommand
 
 # 财务字段 struct 格式：1f + 2H + 2I + 30f
@@ -18,7 +19,7 @@ class GetFinanceInfoCmd(BaseCommand[FinanceInfo]):
 
     def __init__(self, market: Market, code: str) -> None:
         self.market = market
-        self.code = code.encode("utf-8")
+        self.code = validate_code(code).encode("ascii")
 
     def build_request(self) -> bytes:
         header = bytes.fromhex("0c1f18760001 0b000b001000 0100".replace(" ", ""))
@@ -48,9 +49,16 @@ class GetFinanceInfoCmd(BaseCommand[FinanceInfo]):
         except ValueError as e:
             raise TdxDecodeError(f"finance_info 非法 market 值: {market_b}") from e
 
+        code = code_b.decode("utf-8").rstrip("\x00")
+        if market != self.market or code != self.code.decode("ascii"):
+            raise TdxResponseError(
+                f"finance_info 返回证券不匹配: expected=({self.market!r}, "
+                f"{self.code.decode('ascii')}), actual=({market!r}, {code})"
+            )
+
         return FinanceInfo(
             market=market,
-            code=code_b.decode("utf-8").rstrip("\x00"),
+            code=code,
             liutong_guben=liutong_guben * _SCALE,
             zong_guben=zong_guben * _SCALE,
             guojia_gu=guojia_gu * _SCALE,

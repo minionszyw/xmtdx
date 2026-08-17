@@ -1,5 +1,5 @@
-"""验证市场概况模型。"""
-from dataclasses import dataclass
+"""市场概况与资金流模型。"""
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -59,6 +59,8 @@ class HistoricalFundFlow:
     medium_out: float
     small_in: float
     small_out: float
+
+    _raw: bytes = field(default=b"", repr=False, compare=False)
     
     @property
     def main_net_inflow(self) -> float:

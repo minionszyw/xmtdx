@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, TypeVar
 
 from ..codec.frame import HEADER_SIZE, decompress_body, parse_header
 from ..commands.setup import SETUP_COMMANDS
-from ..exceptions import TdxConnectionError
+from ..exceptions import TdxConnectionError, TdxError
+from .capture import CapturedResponse
 
 if TYPE_CHECKING:
     from ..commands.base import BaseCommand
@@ -38,29 +39,21 @@ def ping_host(
     port: int = _DEFAULT_PORT,
     timeout: float = 5.0,
 ) -> float | None:
-    """测量连接到指定服务器并完成握手所需的时间（秒）。
+    """测量服务器完成完整握手和一次业务查询所需的时间（秒）。
 
     返回延迟（秒），连接失败时返回 None。
     """
+    from ..commands.security_count import GetSecurityCountCmd
+    from ..models.enums import Market
+
     t0 = time.monotonic()
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
     try:
-        sock.connect((host, port))
-        # 发送第一条握手命令并等待响应作为可用性验证
-        sock.sendall(SETUP_COMMANDS[0])
-        hdr_buf = _recv_exact_sock(sock, HEADER_SIZE)
-        hdr = parse_header(hdr_buf)
-        if hdr.zipsize > 0:
-            _recv_exact_sock(sock, hdr.zipsize)
+        with TdxConnection(host, port, timeout) as conn:
+            if conn.execute(GetSecurityCountCmd(Market.SH)) <= 0:
+                return None
         return time.monotonic() - t0
-    except OSError:
+    except (OSError, TdxError):
         return None
-    finally:
-        try:
-            sock.close()
-        except OSError:
-            pass
 
 
 def ping_all(
@@ -128,13 +121,20 @@ class TdxConnection:
         self._sock = sock
         try:
             self._send_setup()
-        except Exception:
+        except TdxError:
             try:
                 sock.close()
             except OSError:
                 pass
             self._sock = None
             raise
+        except OSError as error:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            self._sock = None
+            raise TdxConnectionError(f"握手失败 {self.host}:{self.port}: {error}") from error
 
     def close(self) -> None:
         """关闭连接。"""
@@ -145,8 +145,16 @@ class TdxConnection:
                 pass
             self._sock = None
 
+    @property
+    def is_connected(self) -> bool:
+        return self._sock is not None
+
     def execute(self, cmd: "BaseCommand[T]") -> T:
         """执行一条命令：发送请求，接收并解压响应，返回解析结果。"""
+        return self.capture(cmd).result
+
+    def capture(self, cmd: "BaseCommand[T]") -> CapturedResponse[T]:
+        """执行命令并保留请求、帧头、原始响应及解压结果。"""
         if self._sock is None:
             raise TdxConnectionError("未连接，请先调用 connect()")
         request = cmd.build_request()
@@ -155,10 +163,17 @@ class TdxConnection:
             header_buf = self._recv_exact(HEADER_SIZE)
             header = parse_header(header_buf)
             raw_body = self._recv_exact(header.zipsize)
+            body = decompress_body(header, raw_body)
+            result = cmd.parse_response(body)
         except OSError as e:
+            self.close()
             raise TdxConnectionError(f"通信错误: {e}") from e
-        body = decompress_body(header, raw_body)
-        return cmd.parse_response(body)
+        except TdxError:
+            self.close()
+            raise
+        if not cmd.reusable_connection:
+            self.close()
+        return CapturedResponse(request, header, raw_body, body, result)
 
     # ------------------------------------------------------------------ #
     # context manager
@@ -186,14 +201,10 @@ class TdxConnection:
         for cmd_bytes in SETUP_COMMANDS:
             self._sock.sendall(cmd_bytes)
             # 读取并丢弃握手响应
-            try:
-                hdr_buf = self._recv_exact(HEADER_SIZE)
-                hdr = parse_header(hdr_buf)
-                if hdr.zipsize > 0:
-                    self._recv_exact(hdr.zipsize)
-            except OSError:
-                # 部分服务器的握手无响应，忽略错误
-                pass
+            hdr_buf = self._recv_exact(HEADER_SIZE)
+            hdr = parse_header(hdr_buf)
+            raw_body = self._recv_exact(hdr.zipsize)
+            decompress_body(hdr, raw_body)
 
     def _recv_exact(self, n: int) -> bytes:
         """循环 recv 直到读满 n 字节。"""

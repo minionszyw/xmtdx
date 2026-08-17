@@ -1,8 +1,10 @@
 """高层行情 API：TdxClient（同步）和 AsyncTdxClient（asyncio）。"""
 
 import asyncio
+import hashlib
+import math
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
-from collections.abc import Awaitable, Callable
 from types import TracebackType
 from typing import TypeVar
 from zoneinfo import ZoneInfo
@@ -23,18 +25,20 @@ from .commands.security_list import GetSecurityListCmd
 from .commands.security_quotes import GetSecurityQuotesCmd
 from .commands.transaction import GetHistoryTransactionDataCmd, GetTransactionDataCmd
 from .commands.xdxr_info import GetXdxrInfoCmd
-from .exceptions import TdxConnectionError
-from .models.bar import SecurityBar
+from .exceptions import TdxConnectionError, TdxDecodeError, TdxResponseError
+from .models.bar import IndexBar, SecurityBar
 from .models.enums import KlineCategory, Market
 from .models.finance import CompanyInfoCategory, FinanceInfo, TdxBlock, XdxrRecord
 from .models.quote import SecurityQuote
 from .models.security import SecurityInfo
 from .models.stats import FundFlow, HistoricalFundFlow, MarketStat
 from .models.timeseries import MinuteBar, TransactionRecord
-from .transport.async_ import AsyncTdxConnection
+from .transport.async_ import AsyncTdxConnection, ping_all_async
 from .transport.sync import KNOWN_HOSTS, TdxConnection, ping_all
+from .validation import validate_date
 
 _DEFAULT_PORT = 7709
+_DEFAULT_TIMEOUT = 5.0
 _T = TypeVar("_T")
 _SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -43,9 +47,13 @@ def _today_in_shanghai() -> int:
     return int(datetime.now(_SHANGHAI_TZ).strftime("%Y%m%d"))
 
 
+def _now_in_shanghai() -> datetime:
+    return datetime.now(_SHANGHAI_TZ)
+
+
 def _record_signature(
     record: TransactionRecord,
-) -> tuple[int, int, float, int, int, int]:
+) -> tuple[int, int, float, int, int, int, int | None]:
     return (
         record.hour,
         record.minute,
@@ -53,13 +61,27 @@ def _record_signature(
         record.vol,
         record.buyorsell,
         record.unknown_last,
+        record.num_orders,
     )
 
 
 def _page_signature(
     records: list[TransactionRecord],
-) -> tuple[tuple[int, int, float, int, int, int], tuple[int, int, float, int, int, int]]:
-    return (_record_signature(records[0]), _record_signature(records[-1]))
+) -> tuple[tuple[int, int, float, int, int, int, int | None], ...]:
+    return tuple(_record_signature(record) for record in records)
+
+
+def _boundary_overlap(
+    existing: list[TransactionRecord], new_page: list[TransactionRecord]
+) -> int:
+    """返回现有尾部与新页头部完全相同的最大连续记录数。"""
+    limit = min(len(existing), len(new_page))
+    existing_signatures = [_record_signature(record) for record in existing[-limit:]]
+    new_signatures = [_record_signature(record) for record in new_page[:limit]]
+    for size in range(limit, 0, -1):
+        if existing_signatures[-size:] == new_signatures[:size]:
+            return size
+    return 0
 
 
 def _classify_fund_flow(records: list[TransactionRecord]) -> FundFlow:
@@ -96,6 +118,65 @@ def _classify_fund_flow(records: list[TransactionRecord]) -> FundFlow:
 
 def _date_from_bar(bar: SecurityBar) -> int:
     return bar.year * 10000 + bar.month * 100 + bar.day
+
+
+def _unique_hosts(primary: str, fallbacks: Sequence[str]) -> list[str]:
+    hosts: list[str] = []
+    for host in (primary, *fallbacks):
+        if host and host not in hosts:
+            hosts.append(host)
+    if not hosts:
+        raise ValueError("至少需要一个行情服务器")
+    return hosts
+
+
+def _looks_like_index(market: Market, code: str) -> bool:
+    if market == Market.SH:
+        return code.startswith(("000", "880", "881", "882", "883", "884", "885", "999"))
+    if market == Market.SZ:
+        return code.startswith(("395", "399"))
+    return False
+
+
+def _validate_bars(bars: Sequence[SecurityBar], context: str) -> None:
+    for index, bar in enumerate(bars):
+        values = (bar.open, bar.close, bar.high, bar.low, bar.vol, bar.amount)
+        if not all(math.isfinite(value) for value in values):
+            raise TdxResponseError(f"{context}[{index}] 包含非有限数值")
+        try:
+            datetime(bar.year, bar.month, bar.day)
+        except ValueError:
+            raise TdxResponseError(
+                f"{context}[{index}] 日期非法: {bar.year}-{bar.month}-{bar.day}"
+            ) from None
+        if not 1990 <= bar.year <= 2100:
+            raise TdxResponseError(
+                f"{context}[{index}] 日期非法: {bar.year}-{bar.month}-{bar.day}"
+            )
+        if bar.vol < 0 or bar.amount < 0:
+            raise TdxResponseError(f"{context}[{index}] 成交量或成交额为负")
+        if bar.high + 0.001 < max(bar.open, bar.close, bar.low):
+            raise TdxResponseError(f"{context}[{index}] 最高价关系非法")
+        if bar.low - 0.001 > min(bar.open, bar.close, bar.high):
+            raise TdxResponseError(f"{context}[{index}] 最低价关系非法")
+
+
+def _validate_minute_bars(
+    bars: Sequence[MinuteBar], context: str, reference_price: float | None = None
+) -> None:
+    for index, bar in enumerate(bars):
+        if not math.isfinite(bar.price) or bar.price <= 0:
+            raise TdxResponseError(f"{context}[{index}] 价格非法: {bar.price}")
+        if bar.vol < 0:
+            raise TdxResponseError(f"{context}[{index}] 成交量为负: {bar.vol}")
+        if reference_price and not reference_price / 100 <= bar.price <= reference_price * 100:
+            raise TdxResponseError(
+                f"{context}[{index}] 价格 {bar.price} 与参考价 {reference_price} 严重偏离"
+            )
+
+
+def _before_a_share_session(now: datetime) -> bool:
+    return now.weekday() >= 5 or (now.hour, now.minute) < (9, 15)
 
 
 def _historical_fund_flow_from_records(
@@ -143,14 +224,21 @@ class TdxClient:
         self,
         host: str = KNOWN_HOSTS[0],
         port: int = _DEFAULT_PORT,
-        timeout: float = 15.0,
+        timeout: float = _DEFAULT_TIMEOUT,
         auto_reconnect: bool = True,
+        fallback_hosts: Sequence[str] = (),
+        max_attempts: int = 2,
     ) -> None:
-        self._host = host
+        if max_attempts < 1:
+            raise ValueError("max_attempts 必须至少为 1")
+        self._hosts = _unique_hosts(host, fallback_hosts)
+        self._host_index = 0
+        self._host = self._hosts[0]
         self._port = port
         self._timeout = timeout
         self._auto_reconnect = auto_reconnect
-        self._conn = TdxConnection(host, port, timeout)
+        self._max_attempts = max_attempts
+        self._conn = TdxConnection(self._host, port, timeout)
 
     # ------------------------------------------------------------------ #
     # 工厂方法：自动优选最低延迟服务器
@@ -161,17 +249,27 @@ class TdxClient:
         cls,
         hosts: list[str] = KNOWN_HOSTS,
         port: int = _DEFAULT_PORT,
-        timeout: float = 15.0,
+        timeout: float = _DEFAULT_TIMEOUT,
         ping_timeout: float = 5.0,
         auto_reconnect: bool = True,
+        max_attempts: int = 2,
     ) -> "TdxClient":
         """测量 hosts 中所有服务器延迟，选最低延迟的建立连接。
 
         若所有服务器均不可达，回退到 hosts[0]。
         """
         ranked = ping_all(hosts, port, ping_timeout)
-        best = ranked[0][0] if ranked else hosts[0]
-        return cls(best, port, timeout, auto_reconnect)
+        ordered = [item[0] for item in ranked] or list(hosts)
+        if not ordered:
+            raise ValueError("hosts 不能为空")
+        return cls(
+            ordered[0],
+            port,
+            timeout,
+            auto_reconnect,
+            fallback_hosts=ordered[1:],
+            max_attempts=max_attempts,
+        )
 
     @staticmethod
     def ping_all(
@@ -209,17 +307,24 @@ class TdxClient:
     # ------------------------------------------------------------------ #
 
     def _execute(self, cmd: "BaseCommand[_T]") -> _T:
-        """执行命令；断线时尝试重连一次再重试（若 auto_reconnect=True）。"""
-        try:
-            return self._conn.execute(cmd)
-        except TdxConnectionError:
-            if not self._auto_reconnect:
-                raise
-            # 重连后重试一次
-            self._conn.close()
-            self._conn = TdxConnection(self._host, self._port, self._timeout)
-            self._conn.connect()
-            return self._conn.execute(cmd)
+        """执行命令；传输或响应错误时使用全新连接并按主机顺序重试。"""
+        attempts = self._max_attempts if self._auto_reconnect else 1
+        last_error: TdxConnectionError | TdxDecodeError | TdxResponseError | None = None
+        for attempt in range(attempts):
+            if attempt > 0:
+                self._conn.close()
+                self._host_index = (self._host_index + 1) % len(self._hosts)
+                self._host = self._hosts[self._host_index]
+                self._conn = TdxConnection(self._host, self._port, self._timeout)
+            try:
+                if not self._conn.is_connected:
+                    self._conn.connect()
+                return self._conn.execute(cmd)
+            except (TdxConnectionError, TdxDecodeError, TdxResponseError) as error:
+                last_error = error
+                self._conn.close()
+        assert last_error is not None
+        raise last_error
 
     # ------------------------------------------------------------------ #
     # 市场信息
@@ -278,8 +383,18 @@ class TdxClient:
     def get_security_quotes(
         self, stocks: list[tuple[Market, str]]
     ) -> list[SecurityQuote]:
-        """批量获取实时五档行情（最多80只/次）。"""
-        return self._execute(GetSecurityQuotesCmd(stocks))
+        """批量获取实时五档行情；超过 80 只时自动按协议上限分片。"""
+        if not stocks:
+            raise ValueError("stocks 不能为空")
+        if len(set(stocks)) != len(stocks):
+            raise ValueError("stocks 不能包含重复证券")
+        quotes: list[SecurityQuote] = []
+        for start in range(0, len(stocks), 80):
+            batch: list[SecurityQuote] = self._execute(
+                GetSecurityQuotesCmd(stocks[start:start + 80])
+            )
+            quotes.extend(batch)
+        return quotes
 
     def get_price_limits(
         self, market: Market, code: str, name: str, pre_close: float
@@ -320,7 +435,9 @@ class TdxClient:
         count: int = 800,
     ) -> list[SecurityBar]:
         """获取 K 线数据（最多800条/次，按 start 分页）。"""
-        return self._execute(GetSecurityBarsCmd(market, code, category, start, count))
+        bars = self._execute(GetSecurityBarsCmd(market, code, category, start, count))
+        _validate_bars(bars, "security_bars")
+        return bars
 
     def get_index_bars(
         self,
@@ -329,9 +446,53 @@ class TdxClient:
         category: KlineCategory,
         start: int,
         count: int = 800,
-    ) -> list[SecurityBar]:
+    ) -> list[IndexBar]:
         """获取指数 K 线数据。"""
-        return self._execute(GetIndexBarsCmd(market, code, category, start, count))
+        bars = self._execute(GetIndexBarsCmd(market, code, category, start, count))
+        _validate_bars(bars, "index_bars")
+        return bars
+
+    def get_bars(
+        self,
+        market: Market,
+        code: str,
+        category: KlineCategory,
+        start: int,
+        count: int = 800,
+    ) -> list[SecurityBar] | list[IndexBar]:
+        """按市场与代码自动路由股票或指数 K 线。"""
+        if _looks_like_index(market, code):
+            return self.get_index_bars(market, code, category, start, count)
+        return self.get_security_bars(market, code, category, start, count)
+
+    def get_bars_range(
+        self,
+        market: Market,
+        code: str,
+        start_date: int,
+        end_date: int,
+        category: KlineCategory = KlineCategory.DAY,
+    ) -> list[SecurityBar] | list[IndexBar]:
+        """分页获取日期闭区间内的 K 线，并按时间升序去重返回。"""
+        validate_date(start_date)
+        validate_date(end_date)
+        if start_date > end_date:
+            raise ValueError("start_date 不能晚于 end_date")
+        collected: dict[tuple[int, int, int, int, int], SecurityBar] = {}
+        page_start = 0
+        for _ in range(256):
+            page = self.get_bars(market, code, category, page_start, 800)
+            if not page:
+                break
+            for bar in page:
+                bar_date = _date_from_bar(bar)
+                if start_date <= bar_date <= end_date:
+                    key = (bar.year, bar.month, bar.day, bar.hour, bar.minute)
+                    collected[key] = bar
+            if min(_date_from_bar(bar) for bar in page) <= start_date or len(page) < 800:
+                break
+            page_start += len(page)
+        return [collected[key] for key in sorted(collected)]
 
     # ------------------------------------------------------------------ #
     # 分时
@@ -346,13 +507,32 @@ class TdxClient:
                 return bars
         except Exception:
             pass
-        return self._execute(GetMinuteTimeDataCmd(market, code))
+        if _before_a_share_session(_now_in_shanghai()):
+            return []
+
+        bars = self._execute(GetMinuteTimeDataCmd(market, code))
+        if not bars:
+            return []
+        reference_price: float | None = None
+        try:
+            quotes = self.get_security_quotes([(market, code)])
+            if quotes:
+                reference_price = quotes[0].pre_close or quotes[0].price
+            _validate_minute_bars(bars, "minute_time", reference_price)
+        except TdxResponseError:
+            latest = self.get_security_bars(market, code, KlineCategory.DAY, 0, 1)
+            if not latest or _date_from_bar(latest[-1]) != today:
+                return []
+            raise
+        return bars
 
     def get_history_minute_time_data(
         self, market: Market, code: str, date: int
     ) -> list[MinuteBar]:
         """获取历史某日分时数据（date: YYYYMMDD）。"""
-        return self._execute(GetHistoryMinuteTimeDataCmd(market, code, date))
+        bars = self._execute(GetHistoryMinuteTimeDataCmd(market, code, date))
+        _validate_minute_bars(bars, "history_minute_time")
+        return bars
 
     # ------------------------------------------------------------------ #
     # 逐笔成交
@@ -410,12 +590,20 @@ class TdxClient:
         full_data = bytearray()
         pos = 0
         chunk_size = 30000
-        while pos < size:
+        for _ in range(256):
+            if pos >= size:
+                break
             chunk = self._execute(GetBlockInfoCmd(filename, pos, chunk_size))
             if not chunk:
-                break
+                raise TdxResponseError(f"{filename} 在偏移 {pos} 提前结束")
             full_data.extend(chunk)
             pos += len(chunk)
+        if len(full_data) != size:
+            raise TdxResponseError(
+                f"{filename} 长度不符: expected={size}, actual={len(full_data)}"
+            )
+        if len(_hash) == 32 and hashlib.md5(full_data).hexdigest() != _hash.lower():
+            raise TdxResponseError(f"{filename} MD5 校验失败")
         return parse_block_dat(bytes(full_data), filename)
 
     def get_report_file(self, filename: str) -> bytes:
@@ -423,14 +611,20 @@ class TdxClient:
         full_data = bytearray()
         pos = 0
         chunk_size = 30000
-        while True:
+        previous_chunk: bytes | None = None
+        for _ in range(256):
             chunk = self._execute(GetReportFileCmd(filename, pos, chunk_size))
             if not chunk:
                 break
+            if chunk == previous_chunk:
+                raise TdxResponseError(f"{filename} 在偏移 {pos} 返回重复分片")
             full_data.extend(chunk)
             pos += len(chunk)
             if len(chunk) < chunk_size:
                 break
+            previous_chunk = chunk
+        else:
+            raise TdxResponseError(f"{filename} 超过最大分片数 256")
         return bytes(full_data)
 
     def get_market_stat(self) -> MarketStat:
@@ -466,12 +660,8 @@ class TdxClient:
         max_start: int = 10000,
     ) -> list[TransactionRecord]:
         all_recs: list[TransactionRecord] = []
-        seen_sig: set[tuple[int, int, float, int, int, int]] = set()
         seen_page_sigs: set[
-            tuple[
-                tuple[int, int, float, int, int, int],
-                tuple[int, int, float, int, int, int],
-            ]
+            tuple[tuple[int, int, float, int, int, int, int | None], ...]
         ] = set()
         start = 0
 
@@ -485,19 +675,14 @@ class TdxClient:
                 break
             seen_page_sigs.add(page_sig)
 
-            new_count = 0
-            for record in recs:
-                sig = _record_signature(record)
-                if sig not in seen_sig:
-                    seen_sig.add(sig)
-                    all_recs.append(record)
-                    new_count += 1
-
-            if new_count == 0:
+            overlap = _boundary_overlap(all_recs, recs)
+            new_records = recs[overlap:]
+            if not new_records:
                 break
+            all_recs.extend(new_records)
 
             start += len(recs)
-            if len(recs) < 100:
+            if len(recs) < page_size:
                 break
 
         return all_recs
@@ -560,42 +745,60 @@ class AsyncTdxClient:
         self,
         host: str = KNOWN_HOSTS[0],
         port: int = _DEFAULT_PORT,
-        timeout: float = 15.0,
+        timeout: float = _DEFAULT_TIMEOUT,
         auto_reconnect: bool = True,
         heartbeat_interval: float = 60.0,
+        fallback_hosts: Sequence[str] = (),
+        max_attempts: int = 2,
     ) -> None:
-        self._host = host
+        if max_attempts < 1:
+            raise ValueError("max_attempts 必须至少为 1")
+        self._hosts = _unique_hosts(host, fallback_hosts)
+        self._host_index = 0
+        self._host = self._hosts[0]
         self._port = port
         self._timeout = timeout
         self._auto_reconnect = auto_reconnect
         self._heartbeat_interval = heartbeat_interval
-        self._conn = AsyncTdxConnection(host, port, timeout)
+        self._max_attempts = max_attempts
+        self._conn = AsyncTdxConnection(self._host, port, timeout)
         self._execute_lock = asyncio.Lock()
         self._heartbeat_task: asyncio.Task[None] | None = None
 
     @classmethod
-    def from_best_host(
+    async def from_best_host(
         cls,
         hosts: list[str] = KNOWN_HOSTS,
         port: int = _DEFAULT_PORT,
-        timeout: float = 15.0,
+        timeout: float = _DEFAULT_TIMEOUT,
         ping_timeout: float = 5.0,
         auto_reconnect: bool = True,
         heartbeat_interval: float = 60.0,
+        max_attempts: int = 2,
     ) -> "AsyncTdxClient":
         """测量 hosts 中所有服务器延迟，选最低延迟的建立连接。"""
-        ranked = ping_all(hosts, port, ping_timeout)
-        best = ranked[0][0] if ranked else hosts[0]
-        return cls(best, port, timeout, auto_reconnect, heartbeat_interval)
+        ranked = await ping_all_async(hosts, port, ping_timeout)
+        ordered = [item[0] for item in ranked] or list(hosts)
+        if not ordered:
+            raise ValueError("hosts 不能为空")
+        return cls(
+            ordered[0],
+            port,
+            timeout,
+            auto_reconnect,
+            heartbeat_interval,
+            fallback_hosts=ordered[1:],
+            max_attempts=max_attempts,
+        )
 
     @staticmethod
-    def ping_all(
+    async def ping_all(
         hosts: list[str] = KNOWN_HOSTS,
         port: int = _DEFAULT_PORT,
         timeout: float = 5.0,
     ) -> list[tuple[str, float]]:
         """测量多台服务器延迟，返回按延迟排序的 (host, seconds) 列表。"""
-        return ping_all(hosts, port, timeout)
+        return await ping_all_async(hosts, port, timeout)
 
     async def connect(self) -> None:
         await self._conn.connect()
@@ -650,17 +853,25 @@ class AsyncTdxClient:
                 pass
 
     async def _execute(self, cmd: "BaseCommand[_T]") -> _T:
-        """执行命令；断线时尝试重连一次再重试（若 auto_reconnect=True）。"""
+        """执行命令；传输或响应错误时使用全新连接并按主机顺序重试。"""
         async with self._execute_lock:
-            try:
-                return await self._conn.execute(cmd)
-            except TdxConnectionError:
-                if not self._auto_reconnect:
-                    raise
-                await self._conn.close()
-                self._conn = AsyncTdxConnection(self._host, self._port, self._timeout)
-                await self._conn.connect()
-                return await self._conn.execute(cmd)
+            attempts = self._max_attempts if self._auto_reconnect else 1
+            last_error: TdxConnectionError | TdxDecodeError | TdxResponseError | None = None
+            for attempt in range(attempts):
+                if attempt > 0:
+                    await self._conn.close()
+                    self._host_index = (self._host_index + 1) % len(self._hosts)
+                    self._host = self._hosts[self._host_index]
+                    self._conn = AsyncTdxConnection(self._host, self._port, self._timeout)
+                try:
+                    if not self._conn.is_connected:
+                        await self._conn.connect()
+                    return await self._conn.execute(cmd)
+                except (TdxConnectionError, TdxDecodeError, TdxResponseError) as error:
+                    last_error = error
+                    await self._conn.close()
+            assert last_error is not None
+            raise last_error
 
     async def get_security_count(self, market: Market) -> int:
         return await self._execute(GetSecurityCountCmd(market))
@@ -708,7 +919,17 @@ class AsyncTdxClient:
     async def get_security_quotes(
         self, stocks: list[tuple[Market, str]]
     ) -> list[SecurityQuote]:
-        return await self._execute(GetSecurityQuotesCmd(stocks))
+        if not stocks:
+            raise ValueError("stocks 不能为空")
+        if len(set(stocks)) != len(stocks):
+            raise ValueError("stocks 不能包含重复证券")
+        quotes: list[SecurityQuote] = []
+        for start in range(0, len(stocks), 80):
+            batch: list[SecurityQuote] = await self._execute(
+                GetSecurityQuotesCmd(stocks[start:start + 80])
+            )
+            quotes.extend(batch)
+        return quotes
 
     async def get_price_limits(
         self, market: Market, code: str, name: str, pre_close: float
@@ -741,9 +962,11 @@ class AsyncTdxClient:
         start: int,
         count: int = 800,
     ) -> list[SecurityBar]:
-        return await self._execute(
+        bars = await self._execute(
             GetSecurityBarsCmd(market, code, category, start, count)
         )
+        _validate_bars(bars, "security_bars")
+        return bars
 
     async def get_index_bars(
         self,
@@ -752,8 +975,50 @@ class AsyncTdxClient:
         category: KlineCategory,
         start: int,
         count: int = 800,
-    ) -> list[SecurityBar]:
-        return await self._execute(GetIndexBarsCmd(market, code, category, start, count))
+    ) -> list[IndexBar]:
+        bars = await self._execute(GetIndexBarsCmd(market, code, category, start, count))
+        _validate_bars(bars, "index_bars")
+        return bars
+
+    async def get_bars(
+        self,
+        market: Market,
+        code: str,
+        category: KlineCategory,
+        start: int,
+        count: int = 800,
+    ) -> list[SecurityBar] | list[IndexBar]:
+        if _looks_like_index(market, code):
+            return await self.get_index_bars(market, code, category, start, count)
+        return await self.get_security_bars(market, code, category, start, count)
+
+    async def get_bars_range(
+        self,
+        market: Market,
+        code: str,
+        start_date: int,
+        end_date: int,
+        category: KlineCategory = KlineCategory.DAY,
+    ) -> list[SecurityBar] | list[IndexBar]:
+        validate_date(start_date)
+        validate_date(end_date)
+        if start_date > end_date:
+            raise ValueError("start_date 不能晚于 end_date")
+        collected: dict[tuple[int, int, int, int, int], SecurityBar] = {}
+        page_start = 0
+        for _ in range(256):
+            page = await self.get_bars(market, code, category, page_start, 800)
+            if not page:
+                break
+            for bar in page:
+                bar_date = _date_from_bar(bar)
+                if start_date <= bar_date <= end_date:
+                    key = (bar.year, bar.month, bar.day, bar.hour, bar.minute)
+                    collected[key] = bar
+            if min(_date_from_bar(bar) for bar in page) <= start_date or len(page) < 800:
+                break
+            page_start += len(page)
+        return [collected[key] for key in sorted(collected)]
 
     async def get_minute_time_data(self, market: Market, code: str) -> list[MinuteBar]:
         today = _today_in_shanghai()
@@ -763,12 +1028,31 @@ class AsyncTdxClient:
                 return bars
         except Exception:
             pass
-        return await self._execute(GetMinuteTimeDataCmd(market, code))
+        if _before_a_share_session(_now_in_shanghai()):
+            return []
+
+        bars = await self._execute(GetMinuteTimeDataCmd(market, code))
+        if not bars:
+            return []
+        reference_price: float | None = None
+        try:
+            quotes = await self.get_security_quotes([(market, code)])
+            if quotes:
+                reference_price = quotes[0].pre_close or quotes[0].price
+            _validate_minute_bars(bars, "minute_time", reference_price)
+        except TdxResponseError:
+            latest = await self.get_security_bars(market, code, KlineCategory.DAY, 0, 1)
+            if not latest or _date_from_bar(latest[-1]) != today:
+                return []
+            raise
+        return bars
 
     async def get_history_minute_time_data(
         self, market: Market, code: str, date: int
     ) -> list[MinuteBar]:
-        return await self._execute(GetHistoryMinuteTimeDataCmd(market, code, date))
+        bars = await self._execute(GetHistoryMinuteTimeDataCmd(market, code, date))
+        _validate_minute_bars(bars, "history_minute_time")
+        return bars
 
     async def get_transaction_data(
         self, market: Market, code: str, start: int, count: int = 800
@@ -806,12 +1090,20 @@ class AsyncTdxClient:
         full_data = bytearray()
         pos = 0
         chunk_size = 30000
-        while pos < size:
+        for _ in range(256):
+            if pos >= size:
+                break
             chunk = await self._execute(GetBlockInfoCmd(filename, pos, chunk_size))
             if not chunk:
-                break
+                raise TdxResponseError(f"{filename} 在偏移 {pos} 提前结束")
             full_data.extend(chunk)
             pos += len(chunk)
+        if len(full_data) != size:
+            raise TdxResponseError(
+                f"{filename} 长度不符: expected={size}, actual={len(full_data)}"
+            )
+        if len(_hash) == 32 and hashlib.md5(full_data).hexdigest() != _hash.lower():
+            raise TdxResponseError(f"{filename} MD5 校验失败")
         return parse_block_dat(bytes(full_data), filename)
 
     async def get_report_file(self, filename: str) -> bytes:
@@ -819,14 +1111,20 @@ class AsyncTdxClient:
         full_data = bytearray()
         pos = 0
         chunk_size = 30000
-        while True:
+        previous_chunk: bytes | None = None
+        for _ in range(256):
             chunk = await self._execute(GetReportFileCmd(filename, pos, chunk_size))
             if not chunk:
                 break
+            if chunk == previous_chunk:
+                raise TdxResponseError(f"{filename} 在偏移 {pos} 返回重复分片")
             full_data.extend(chunk)
             pos += len(chunk)
             if len(chunk) < chunk_size:
                 break
+            previous_chunk = chunk
+        else:
+            raise TdxResponseError(f"{filename} 超过最大分片数 256")
         return bytes(full_data)
 
     async def get_market_stat(self) -> MarketStat:
@@ -862,12 +1160,8 @@ class AsyncTdxClient:
         max_start: int = 10000,
     ) -> list[TransactionRecord]:
         all_recs: list[TransactionRecord] = []
-        seen_sig: set[tuple[int, int, float, int, int, int]] = set()
         seen_page_sigs: set[
-            tuple[
-                tuple[int, int, float, int, int, int],
-                tuple[int, int, float, int, int, int],
-            ]
+            tuple[tuple[int, int, float, int, int, int, int | None], ...]
         ] = set()
         start = 0
 
@@ -881,19 +1175,14 @@ class AsyncTdxClient:
                 break
             seen_page_sigs.add(page_sig)
 
-            new_count = 0
-            for record in recs:
-                sig = _record_signature(record)
-                if sig not in seen_sig:
-                    seen_sig.add(sig)
-                    all_recs.append(record)
-                    new_count += 1
-
-            if new_count == 0:
+            overlap = _boundary_overlap(all_recs, recs)
+            new_records = recs[overlap:]
+            if not new_records:
                 break
+            all_recs.extend(new_records)
 
             start += len(recs)
-            if len(recs) < 100:
+            if len(recs) < page_size:
                 break
 
         return all_recs

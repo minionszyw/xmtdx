@@ -63,6 +63,9 @@ class SecurityQuote:
     limit_up: float | None    # 涨停价（业务规则计算）
     limit_down: float | None  # 跌停价（业务规则计算）
 
+    unknown_0: int = field(default=0, repr=False)
+    unknown_1: int = field(default=0, repr=False)
+
     # 未知字段：买卖量之后的两个变长整数（保留供进一步分析）
     unknown_2: int = field(default=0, repr=False)  # 未知变长整数 2
     unknown_3: int = field(default=0, repr=False)  # 未知变长整数 3
@@ -72,6 +75,7 @@ class SecurityQuote:
     unknown_6: int = field(default=0, repr=False)  # 原 reversed_bytes6
     unknown_7: int = field(default=0, repr=False)  # 原 reversed_bytes7
     unknown_8: int = field(default=0, repr=False)  # 原 reversed_bytes8
+    unknown_4: int = field(default=0, repr=False)
 
     # 服务器时间字符串（从 unknown_0 原始整数解析，格式 HH:MM:SS.mmm）
     server_time: str = field(default="", repr=True)

@@ -68,7 +68,7 @@ class FinanceInfo:
     market: Market
     code: str
 
-    # 股本（万股）
+    # 股本（股；协议原始值以万股计，解析时已乘 10000）
     liutong_guben: float    # 流通股本
     zong_guben: float       # 总股本
     guojia_gu: float        # 国家股
@@ -126,6 +126,7 @@ class CompanyInfoCategory:
     filename: str = ""  # 文件名（如 '600000.txt'）
     start: int = 0      # 内容起始偏移
     length: int = 0     # 内容长度（字节）
+    _raw: bytes = field(default=b"", repr=False, compare=False)
 
 
 @dataclass
@@ -136,3 +137,4 @@ class TdxBlock:
     category: int       # 板块分类（0=行业, 1=地域, 2=概念, 3=风格, 等）
     count: int          # 板块包含股票数量
     codes: list[str]    # 股票代码列表（6位数字代码）
+    _raw: bytes = field(default=b"", repr=False, compare=False)

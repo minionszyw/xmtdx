@@ -1,4 +1,4 @@
-from .bar import SecurityBar
+from .bar import IndexBar, SecurityBar
 from .enums import KlineCategory, Market
 from .finance import (
     XDXR_CATEGORY_NAMES,
@@ -14,6 +14,7 @@ __all__ = [
     "Market",
     "KlineCategory",
     "SecurityBar",
+    "IndexBar",
     "SecurityQuote",
     "SecurityInfo",
     "MinuteBar",

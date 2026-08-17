@@ -9,9 +9,10 @@ import struct
 from .._binary import slice_bytes, unpack_from
 from ..codec.datetime_ import get_datetime
 from ..codec.volume import _decode_volume
-from ..exceptions import TdxDecodeError
+from ..exceptions import TdxDecodeError, TdxResponseError
 from ..models.enums import Market
 from ..models.finance import XDXR_CATEGORY_NAMES, XdxrRecord
+from ..validation import validate_code
 from .base import BaseCommand
 
 
@@ -20,7 +21,7 @@ class GetXdxrInfoCmd(BaseCommand[list[XdxrRecord]]):
 
     def __init__(self, market: Market, code: str) -> None:
         self.market = market
-        self.code = code.encode("utf-8")
+        self.code = validate_code(code).encode("ascii")
 
     def build_request(self) -> bytes:
         header = bytes.fromhex("0c1f18760001 0b000b000f000100".replace(" ", ""))
@@ -56,9 +57,16 @@ class GetXdxrInfoCmd(BaseCommand[list[XdxrRecord]]):
             except ValueError as e:
                 raise TdxDecodeError(f"xdxr_info 非法 market 值: {market_b}") from e
 
+            code = code_b.decode("utf-8").rstrip("\x00")
+            if market != self.market or code != self.code.decode("ascii"):
+                raise TdxResponseError(
+                    f"xdxr_info 返回证券不匹配: expected=({self.market!r}, "
+                    f"{self.code.decode('ascii')}), actual=({market!r}, {code})"
+                )
+
             rec = XdxrRecord(
                 market=market,
-                code=code_b.decode("utf-8").rstrip("\x00"),
+                code=code,
                 year=year,
                 month=month,
                 day=day,
