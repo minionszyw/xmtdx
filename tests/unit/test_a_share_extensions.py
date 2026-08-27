@@ -6,8 +6,11 @@ from datetime import datetime
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from xmtdx import AsyncTdxClient, Market, TdxClient
 from xmtdx.client import _classify_fund_flow
+from xmtdx.exceptions import TdxResponseError
 from xmtdx.models.bar import SecurityBar
 from xmtdx.models.quote import SecurityQuote
 from xmtdx.models.security import SecurityInfo
@@ -27,13 +30,29 @@ def test_get_fund_flow_logic(_mock_conn_cls):
         TransactionRecord(10, 2, 10.0, 10, 0, 0),   # small_in (10*10*100 = 1w)
     ]
     
-    with patch.object(TdxClient, "get_transaction_data", return_value=mock_recs):
+    mock_quote = type("Q", (), {"vol": 361})()
+    quote = patch.object(TdxClient, "get_security_quotes", return_value=[mock_quote])
+    transactions = patch.object(
+        TdxClient, "get_transaction_data", side_effect=[mock_recs, []]
+    )
+    with quote, transactions:
         flow = client.get_fund_flow(Market.SH, "600000")
         
         assert flow.super_in == 1010000.0
         assert flow.large_out == 250000.0
         assert flow.small_in == 10000.0
-        assert flow.main_net_inflow == 1010000.0 - 250000.0
+    assert flow.main_net_inflow == 1010000.0 - 250000.0
+
+
+@patch("xmtdx.client.TdxConnection")
+def test_get_fund_flow_rejects_incomplete_volume(_mock_conn_cls):
+    client = TdxClient("127.0.0.1")
+    records = [TransactionRecord(10, 0, 10.0, 10, 0, 0)]
+    quote = type("Q", (), {"vol": 11})()
+    with patch.object(TdxClient, "get_security_quotes", return_value=[quote]), patch.object(
+        TdxClient, "get_transaction_data", side_effect=[records, []]
+    ), pytest.raises(TdxResponseError, match="覆盖不完整"):
+        client.get_fund_flow(Market.SH, "600000")
 
 
 def test_classify_fund_flow_exact_thresholds_use_lower_bucket():

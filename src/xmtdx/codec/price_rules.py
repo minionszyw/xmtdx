@@ -60,8 +60,6 @@ def compute_price_limits(
     if pre_close <= 0:
         return None, None
 
-    upper_name = name.upper()
-
     # 指数/板块类代码通常无涨跌停。
     if _is_index_like(market, code, name):
         return None, None
@@ -70,15 +68,11 @@ def compute_price_limits(
     if listed_days is not None and 0 < listed_days <= no_limit_window_days:
         return None, None
 
-    limit_pct = 0.10  # 默认 10%
-
-    # 2. ST / *ST 判断
-    if "ST" in upper_name:
-        limit_pct = 0.05
-    # 3. 科创板 (688) / 创业板 (300, 301)
-    elif code.startswith("688") or code.startswith("300") or code.startswith("301"):
+    # 2026-07-06 起沪深主板风险警示股票也为 10%；风险警示状态不再
+    # 覆盖科创板、创业板和北交所各自的板块涨跌幅。
+    limit_pct = 0.10
+    if code.startswith("688") or code.startswith("300") or code.startswith("301"):
         limit_pct = 0.20
-    # 4. 北交所 (43, 83, 87, 92)
     elif code.startswith(("43", "83", "87", "92")):
         limit_pct = 0.30
 

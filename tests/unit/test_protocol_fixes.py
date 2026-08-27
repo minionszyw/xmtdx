@@ -92,20 +92,25 @@ def test_security_quotes_limit_mapping():
     assert q.limit_up is None
     assert q.limit_down is None
     assert q.pre_close == 10.05
+    assert q.quote_time == q.server_time
 
 
-def test_security_quotes_server_time_format():
-    """服务器时间应按“小时 + 百万分之一小时”统一解码。"""
-    from xmtdx.commands.security_quotes import _format_server_time
+def test_security_quotes_quote_time_format():
+    """行情快照时间应按“小时 + 百万分之一小时”统一解码。"""
+    from xmtdx.commands.security_quotes import _format_quote_time, _format_server_time
 
-    assert _format_server_time(9500000) == "09:30:00.000"
-    assert _format_server_time(14999212) == "14:59:57.163"
+    assert _format_quote_time(9500000) == "09:30:00.000"
+    assert _format_quote_time(14999212) == "14:59:57.163"
+    assert _format_server_time(14999212) == _format_quote_time(14999212)
 
 
 def test_compute_price_limits_for_stocks():
     """普通股票 / ST / 创业板 / 科创板 / 北交所规则应可正确计算。"""
     assert compute_price_limits(Market.SH, "600000", "浦发银行", 10.05) == (11.06, 9.05)
-    assert compute_price_limits(Market.SH, "603939", "ST益丰", 22.53) == (23.66, 21.4)
+    assert compute_price_limits(Market.SH, "603939", "ST益丰", 22.53) == (24.78, 20.28)
+    assert compute_price_limits(Market.SZ, "300001", "*ST特锐", 10.0) == (12.0, 8.0)
+    assert compute_price_limits(Market.SH, "688001", "ST科创", 10.0) == (12.0, 8.0)
+    assert compute_price_limits(Market.BJ, "920001", "ST北交", 10.0) == (13.0, 7.0)
     assert compute_price_limits(Market.SZ, "301269", "华大九天", 86.36) == (103.63, 69.09)
     assert compute_price_limits(Market.SH, "688981", "中芯国际", 101.52) == (121.82, 81.22)
     assert compute_price_limits(Market.BJ, "920002", "万达轴承", 84.36) == (109.67, 59.05)

@@ -77,7 +77,10 @@ class SecurityQuote:
     unknown_8: int = field(default=0, repr=False)  # 原 reversed_bytes8
     unknown_4: int = field(default=0, repr=False)
 
-    # 服务器时间字符串（从 unknown_0 原始整数解析，格式 HH:MM:SS.mmm）
+    # 单只证券行情快照更新时间，不含日期（从 unknown_0 解析）
+    quote_time: str = field(default="", repr=True)
+
+    # 0.2.1 起弃用：兼容旧名称；该字段不是服务器当前墙上时间。
     server_time: str = field(default="", repr=True)
 
     # 原始字节（该股票记录切片）

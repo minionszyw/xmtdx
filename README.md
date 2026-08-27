@@ -2,6 +2,8 @@
 
 通达信私有 7709/TCP 行情协议的 A 股客户端实现，零运行时依赖。协议并无官方公开规范，字段与命令来自兼容实现、抓包和真实服务器交叉验证，因此属于兼容性逆向开发，不包含通达信客户端代码。
 
+当前源码版本：**0.2.1**。
+
 pytdx 年久失修：多处已知解析 bug、Python 2 包袱、无类型注解、大量未知字段被静默丢弃。xmtdx 重新实现协议，修复已知 bug，保留全部原始字节与未知字段供后续逆向分析。
 
 ## 特性
@@ -9,13 +11,13 @@ pytdx 年久失修：多处已知解析 bug、Python 2 包袱、无类型注解�
 - **零依赖**：纯标准库，Python ≥ 3.10
 - **同步 + asyncio 双接口**：`TdxClient` / `AsyncTdxClient`，commands 层不含任何 IO
 - **完整类型注解**：strict `mypy` + `ruff` 通过
-- **高可用传输**：同步/异步均支持 `ping_all()`、`from_best_host()`、断线自动重连
-- **响应语义校验**：校验证券身份、日期、OHLC、成交量和文件完整性，异常响应自动切换候选服务器
+- **高可用传输**：同步/异步均支持 `ping_all()`、`from_best_host()` 和候选服务器重试
+- **响应语义校验**：校验证券身份、日期、OHLC、成交量、资金流覆盖率和文件完整性
 - **批量与区间 API**：行情超过 80 只自动分片，K 线支持股票/指数自动路由和日期区间分页
 - **修复 pytdx 已知 bug**（见下文）
 - **保留原始字节**：每条数据记录含 `_raw: bytes`，未知字段以 `unknown_N` 命名而非丢弃
-- **保活心跳机制**：`AsyncTdxClient` 自动发送心跳包，确保长连接生产环境稳定性
-- **沪深 A 股完整列表**：`get_security_list_all()` 自动过滤非 A 股品种并挂载行业信息
+- **保活心跳机制**：`AsyncTdxClient` 自动发送心跳包，帮助维持长连接
+- **沪深 A 股完整列表**：`get_security_list_all()` 自动过滤非 A 股品种并尽力挂载行业信息
 - **北交所列表限制**：`get_security_list(Market.BJ, start)` 当前不能稳定获取，BJ 暂未纳入 `get_security_list_all()`
 - **全市场涨跌统计**：一键获取全 A 股涨/跌/平家数及总成交额
 - **离线 + 本地传输回归测试**：覆盖解析、异步并发串行化、超时、自动重连与坏包处理
@@ -86,9 +88,14 @@ client = await AsyncTdxClient.from_best_host(ping_timeout=5.0)
 
 ```
 180.153.18.170  180.153.18.171  180.153.18.172
+124.71.187.122  119.147.212.81
 115.238.56.198  115.238.90.165  218.75.126.9
 47.107.75.159   59.175.238.38
 ```
+
+`from_best_host()` 会把测速可达的主机配置为候选列表，但单次调用最多尝试
+`max_attempts` 台（默认 2 台）。直接使用 `TdxClient(host)` 且不传
+`fallback_hosts` 时，重连仍是同一台主机。
 
 
 ## API
@@ -99,7 +106,7 @@ client = await AsyncTdxClient.from_best_host(ping_timeout=5.0)
 |------|------|
 | `get_security_count(market)` | 市场证券总数 |
 | `get_security_list(market, start)` | 证券列表（每页 ~1000 条；BJ 当前不能稳定获取） |
-| `get_security_list_all()` | 沪深 A 股列表（自动挂载行业信息；BJ 暂未纳入） |
+| `get_security_list_all()` | 沪深 A 股列表（尽力挂载行业信息；BJ 暂未纳入） |
 | `get_market_stat()` | 全市场 A 股涨跌统计（家数、成交额） |
 | `get_security_quotes([(market, code), ...])` | 批量实时五档行情（任意数量，内部每 80 只分片） |
 | `get_price_limits(market, code, name, pre_close)` | 计算当前涨跌停价（自动处理上市初期无涨跌幅限制） |
@@ -107,11 +114,11 @@ client = await AsyncTdxClient.from_best_host(ping_timeout=5.0)
 | `get_index_bars(market, code, category, start, count=800)` | K 线（指数） |
 | `get_bars(market, code, category, start, count=800)` | 按代码自动路由股票/指数 K 线 |
 | `get_bars_range(market, code, start_date, end_date, category=DAY)` | 获取日期闭区间 K 线，自动分页、排序和去重 |
-| `get_minute_time_data(market, code)` | 今日分时（240 条） |
+| `get_minute_time_data(market, code)` | 今日分时（盘中返回截至当前，全天最多约 240 条） |
 | `get_history_minute_time_data(market, code, date)` | 历史某日分时，`date=YYYYMMDD` |
 | `get_transaction_data(market, code, start, count=800)` | 当日逐笔成交（分页） |
 | `get_history_transaction_data(market, code, date, start, count=800)` | 历史逐笔成交 |
-| `get_fund_flow(market, code)` | 当日资金流向统计（超大/大/中/小单） |
+| `get_fund_flow(market, code)` | 当日资金流向统计（800 条分页至结束并校验成交量覆盖） |
 | `get_history_fund_flow(market, code, start, count)` | 历史日线资金流向序列（优先 Category 22，空回包时自动回退到历史逐笔重算） |
 | `get_xdxr_info(market, code)` | 除权除息历史 |
 | `get_finance_info(market, code)` | 最新财务数据 |
@@ -129,6 +136,9 @@ client = await AsyncTdxClient.from_best_host(ping_timeout=5.0)
 ## 已知限制
 
 - `xmtdx` 当前不能稳定获取 BJ 证券列表；`get_security_count(Market.BJ)` 可用，但 `get_security_list(Market.BJ, start)` 经常超时，因此 `get_security_list_all()` 暂不纳入 BJ。
+- 公共服务器的逐笔单页按 800 条使用；若返回重复页、分页范围耗尽或逐笔量低于查询前的行情快照成交量，资金流接口会抛出 `TdxResponseError`，不会返回已知不完整的统计。
+- `get_history_fund_flow()` 的 Category 22 兼容回退需要历史逐笔数据；服务器对过去交易日返回空数据时会报错，不会把“缺数据”伪装成全零资金流。
+- 心跳、重连和候选服务器只能提高可用性，不构成生产环境 SLA；公共服务器地址及行为可能随时变化。
 
 ### KlineCategory
 
@@ -156,7 +166,8 @@ market  code  price  pre_close  open  high  low
 vol  cur_vol  amount  s_vol  b_vol
 bid1..bid5  bid_vol1..bid_vol5
 ask1..ask5  ask_vol1..ask_vol5
-rise_speed  limit_up  limit_down  server_time
+rise_speed  limit_up  limit_down  quote_time
+server_time   # 兼容旧名称，0.2.1 起弃用
 unknown_0..unknown_8
 _raw
 ```
@@ -164,6 +175,13 @@ _raw
 `limit_up` / `limit_down` 当前不再直接由协议字段映射，默认保留为 `None`；
 建议通过 `client.get_price_limits(...)` 计算当前涨跌停价，或用
 `xmtdx.codec.price_rules.compute_price_limits(..., listed_days=...)` 做纯规则计算。
+
+`quote_time` 是 `unknown_0` 解码出的单只证券行情快照更新时间，格式为
+`HH:MM:SS.mmm`，不含日期，也不是服务器当前墙上时间。同一批证券的值可能不同。
+`server_time` 暂时保留相同值以兼容 0.2.0 调用方，请迁移到 `quote_time`。
+
+涨跌停计算使用当前规则：沪深主板 10%，创业板/科创板 20%，北交所 30%；
+自 2026-07-06 起沪深主板风险警示股票同样按 10% 处理。该函数不用于还原历史日期规则。
 
 ### MinuteBar（分时）
 
@@ -250,6 +268,10 @@ super_in/out  large_in/out  medium_in/out  small_in/out
 main_net_inflow  total_net_inflow
 ```
 
+资金流由 L1 逐笔按单笔金额分档计算，不等同于交易所或商业数据商的官方资金流口径。
+当日接口会获取查询开始时的行情成交量作为最低覆盖基线；逐笔可继续更新，因此最终
+逐笔总量略高于该快照属于正常情况。
+
 ### HistoricalFundFlow（历史资金流序列）
 
 ```
@@ -273,6 +295,13 @@ main_net_inflow
 | 8 | `index_bars` | 按股票记录长度解析，第二条起字段错位 | 每条额外消费并暴露 `up_count/down_count` |
 | 9 | `security_list` | 部分服务器单连接翻页会停滞 | 每页完成后主动换新连接 |
 | 10 | `transaction` | 当日 `num_orders` 被丢弃，分页全局去重误删合法同值成交 | 保留笔数，只消除相邻页边界重叠 |
+| 11 | `fund_flow` | 请求 2000 条导致服务器短页/空页并提前结束，只统计尾盘 | 固定 800 条倒序翻页至空页，检测停滞并校验成交量覆盖 |
+
+## 使用边界
+
+xmtdx 是对未公开行情协议的兼容性逆向实现，仅供研究和技术验证。使用者应自行确认
+数据来源、服务条款、授权和再分发要求。公共服务器不保证永久开放、数据完整、实时性
+或适合交易用途；任何交易决策都应使用具备相应授权和服务保障的数据源复核。
 
 ## 架构
 

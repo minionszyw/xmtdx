@@ -15,8 +15,8 @@ from ..validation import validate_code
 from .base import BaseCommand
 
 
-def _format_server_time(raw: int) -> str:
-    """将 reversed_bytes0 整数转换为 HH:MM:SS.mmm 字符串。
+def _format_quote_time(raw: int) -> str:
+    """将行情快照时间整数转换为 HH:MM:SS.mmm 字符串。
 
     该字段编码为“小时 + 百万分之一小时的小数部分”。
     例如：14999212 → "14:59:57.163"
@@ -26,6 +26,11 @@ def _format_server_time(raw: int) -> str:
     minutes, remainder = divmod(total_millis, 60_000)
     seconds, millis = divmod(remainder, 1000)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
+
+
+def _format_server_time(raw: int) -> str:
+    """兼容旧内部名称；该值是证券行情快照时间，不是服务器当前时间。"""
+    return _format_quote_time(raw)
 
 
 class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
@@ -89,7 +94,7 @@ class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
             high_diff, pos = get_price(body, pos)
             low_diff, pos = get_price(body, pos)
 
-            # unknown_0: 服务器时间戳原始整数（get_price 解码）
+            # unknown_0: 单只证券行情快照时间原始整数（get_price 解码）
             unknown_0, pos = get_price(body, pos)
             # unknown_1: 通常等于 -price_raw（pytdx 注释推测）
             unknown_1, pos = get_price(body, pos)
@@ -153,6 +158,7 @@ class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
             except ValueError as e:
                 raise TdxDecodeError(f"security_quotes 非法 market 值: {market_b}") from e
 
+            quote_time = _format_quote_time(unknown_0)
             results.append(
                 SecurityQuote(
                     market=market,
@@ -201,7 +207,8 @@ class GetSecurityQuotesCmd(BaseCommand[list[SecurityQuote]]):
                     unknown_6=unknown_6,
                     unknown_7=unknown_7,
                     unknown_8=unknown_8,
-                    server_time=_format_server_time(unknown_0),
+                    quote_time=quote_time,
+                    server_time=quote_time,
                     _raw=body[record_start:pos],
                 )
             )

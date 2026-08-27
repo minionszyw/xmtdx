@@ -7,7 +7,9 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from xmtdx import AsyncTdxClient, KlineCategory, Market, TdxClient
 from xmtdx.transport.sync import KNOWN_HOSTS
@@ -139,18 +141,22 @@ def validate(hosts: list[str], timeout: float, full_list: bool, quick: bool) -> 
 
         daily = stock_bars.get("DAY") if stock_bars else None
         latest_date = _date(daily[-1]) if daily else None
+        today = int(datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d"))
+        history_date = latest_date
+        if daily and latest_date == today and len(daily) > 1:
+            history_date = _date(daily[-2])
         _run_check(
             checks,
             "minute_current",
             lambda: client.get_minute_time_data(Market.SH, "600000"),
         )
-        if latest_date:
+        if history_date:
             _run_check(
                 checks,
                 "minute_history",
                 lambda: _require(
                     client.get_history_minute_time_data(
-                        Market.SH, "600000", latest_date
+                        Market.SH, "600000", history_date
                     ),
                     "历史分时为空",
                 ),
@@ -160,7 +166,7 @@ def validate(hosts: list[str], timeout: float, full_list: bool, quick: bool) -> 
                 "transaction_history",
                 lambda: _require(
                     client.get_history_transaction_data(
-                        Market.SH, "600000", latest_date, 0, 20
+                        Market.SH, "600000", history_date, 0, 20
                     ),
                     "历史逐笔为空",
                 ),

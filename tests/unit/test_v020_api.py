@@ -1,4 +1,4 @@
-"""0.2.0 协议修正与高层 API 回归测试。"""
+"""0.2.x 协议修正与高层 API 回归测试。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from xmtdx import KlineCategory, Market, TdxClient, to_dataframe
+from xmtdx import AsyncTdxClient, KlineCategory, Market, TdxClient, to_dataframe
 from xmtdx.client import _boundary_overlap, _validate_bars
 from xmtdx.codec.price import put_price
 from xmtdx.commands.finance_info import GetFinanceInfoCmd
@@ -76,6 +76,11 @@ def test_current_transaction_retains_num_orders() -> None:
     records = GetTransactionDataCmd(Market.SH, "600000", 0, 800).parse_response(body)
     assert records
     assert all(record.num_orders is not None for record in records)
+
+
+def test_transaction_page_size_is_capped_at_800() -> None:
+    with pytest.raises(ValueError, match="count.*800"):
+        GetTransactionDataCmd(Market.SH, "600000", 0, 801)
 
 
 def test_quote_and_finance_reject_mismatched_security() -> None:
@@ -160,8 +165,51 @@ def test_get_bars_routes_and_range_pages(_connection: object) -> None:
 def test_transaction_overlap_only_removes_page_boundary() -> None:
     a = TransactionRecord(9, 30, 10.0, 1, 0, 0)
     b = TransactionRecord(9, 31, 10.0, 1, 0, 0)
-    assert _boundary_overlap([a, b], [b, b]) == 1
+    assert _boundary_overlap([b, b], [a, b]) == 1
     assert _boundary_overlap([a, b], [a, b]) == 2
+
+
+@patch("xmtdx.client.TdxConnection")
+def test_transaction_collector_follows_short_page_to_empty(_connection: object) -> None:
+    client = TdxClient("127.0.0.1")
+    a = TransactionRecord(9, 30, 10.0, 1, 0, 0)
+    b = TransactionRecord(9, 31, 10.1, 2, 0, 0)
+    c = TransactionRecord(9, 32, 10.2, 3, 1, 0)
+    d = TransactionRecord(9, 33, 10.3, 4, 1, 0)
+    starts: list[int] = []
+    pages = [[c, d], [a, b, c], []]
+
+    def fetch(start: int, count: int) -> list[TransactionRecord]:
+        starts.append(start)
+        assert count == 800
+        return pages.pop(0)
+
+    assert client._collect_transaction_records(fetch) == [a, b, c, d]
+    assert starts == [0, 2, 5]
+
+
+@patch("xmtdx.client.TdxConnection")
+def test_transaction_collector_rejects_repeated_page(_connection: object) -> None:
+    client = TdxClient("127.0.0.1")
+    page = [TransactionRecord(9, 30, 10.0, 1, 0, 0)]
+    with pytest.raises(TdxResponseError, match="重复页面"):
+        client._collect_transaction_records(lambda _start, _count: page)
+
+
+def test_async_transaction_collector_matches_sync_behavior() -> None:
+    async def main() -> None:
+        client = AsyncTdxClient("127.0.0.1", heartbeat_interval=0)
+        older = TransactionRecord(9, 30, 10.0, 1, 0, 0)
+        newer = TransactionRecord(9, 31, 10.1, 2, 1, 0)
+        pages = [[newer], [older], []]
+
+        async def fetch(_start: int, count: int) -> list[TransactionRecord]:
+            assert count == 800
+            return pages.pop(0)
+
+        assert await client._collect_transaction_records(fetch) == [older, newer]
+
+    asyncio.run(main())
 
 
 def test_to_dataframe_excludes_raw_by_default() -> None:

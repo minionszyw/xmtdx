@@ -74,14 +74,26 @@ def _page_signature(
 def _boundary_overlap(
     existing: list[TransactionRecord], new_page: list[TransactionRecord]
 ) -> int:
-    """返回现有尾部与新页头部完全相同的最大连续记录数。"""
+    """返回较早页尾部与现有较新记录头部的最大边界重叠数。"""
     limit = min(len(existing), len(new_page))
-    existing_signatures = [_record_signature(record) for record in existing[-limit:]]
-    new_signatures = [_record_signature(record) for record in new_page[:limit]]
+    existing_signatures = [_record_signature(record) for record in existing[:limit]]
+    new_signatures = [_record_signature(record) for record in new_page[-limit:]]
     for size in range(limit, 0, -1):
-        if existing_signatures[-size:] == new_signatures[:size]:
+        if new_signatures[-size:] == existing_signatures[:size]:
             return size
     return 0
+
+
+def _validate_fund_flow_coverage(
+    records: list[TransactionRecord], quote: SecurityQuote
+) -> None:
+    """保证逐笔至少覆盖取得行情快照时已经公布的成交量。"""
+    transaction_volume = sum(record.vol for record in records)
+    if transaction_volume + 1e-6 < quote.vol:
+        raise TdxResponseError(
+            "当日逐笔成交覆盖不完整: "
+            f"transaction_volume={transaction_volume}, quote_volume={quote.vol}"
+        )
 
 
 def _classify_fund_flow(records: list[TransactionRecord]) -> FundFlow:
@@ -182,7 +194,10 @@ def _before_a_share_session(now: datetime) -> bool:
 def _historical_fund_flow_from_records(
     date: int, records: list[TransactionRecord]
 ) -> HistoricalFundFlow:
-    flow = _classify_fund_flow(records)
+    return _historical_fund_flow_from_flow(date, _classify_fund_flow(records))
+
+
+def _historical_fund_flow_from_flow(date: int, flow: FundFlow) -> HistoricalFundFlow:
     year = date // 10000
     month = (date // 100) % 100
     day = date % 100
@@ -499,7 +514,7 @@ class TdxClient:
     # ------------------------------------------------------------------ #
 
     def get_minute_time_data(self, market: Market, code: str) -> list[MinuteBar]:
-        """获取今日分时数据（240条）。"""
+        """获取今日分时数据（盘中返回截至当前，全天最多约 240 条）。"""
         today = _today_in_shanghai()
         try:
             bars = self.get_history_minute_time_data(market, code, today)
@@ -656,8 +671,7 @@ class TdxClient:
     def _collect_transaction_records(
         self,
         fetch_page: Callable[[int, int], list[TransactionRecord]],
-        page_size: int,
-        max_start: int = 10000,
+        page_size: int = 800,
     ) -> list[TransactionRecord]:
         all_recs: list[TransactionRecord] = []
         seen_page_sigs: set[
@@ -665,34 +679,38 @@ class TdxClient:
         ] = set()
         start = 0
 
-        while start < max_start:
+        while start <= 0xFFFF:
             recs = fetch_page(start, page_size)
             if not recs:
                 break
 
             page_sig = _page_signature(recs)
             if page_sig in seen_page_sigs:
-                break
+                raise TdxResponseError(f"逐笔成交在偏移 {start} 返回重复页面")
             seen_page_sigs.add(page_sig)
 
             overlap = _boundary_overlap(all_recs, recs)
-            new_records = recs[overlap:]
+            new_records = recs[:-overlap] if overlap else recs
             if not new_records:
-                break
-            all_recs.extend(new_records)
+                raise TdxResponseError(f"逐笔成交在偏移 {start} 没有产生新记录")
+            all_recs = new_records + all_recs
 
-            start += len(recs)
-            if len(recs) < page_size:
-                break
+            next_start = start + len(recs)
+            if next_start > 0xFFFF:
+                raise TdxResponseError("逐笔成交超过协议 uint16 分页范围")
+            start = next_start
 
         return all_recs
 
     def get_fund_flow(self, market: Market, code: str) -> FundFlow:
         """获取个股当日资金流向分布（基于 L1 逐笔数据统计）。"""
+        quotes = self.get_security_quotes([(market, code)])
+        if not quotes:
+            raise TdxResponseError(f"无法获取 {market.name}:{code} 行情以校验资金流完整性")
         records = self._collect_transaction_records(
             lambda start, page_size: self.get_transaction_data(market, code, start, page_size),
-            2000,
         )
+        _validate_fund_flow_coverage(records, quotes[0])
         return _classify_fund_flow(records)
 
     def get_history_fund_flow(
@@ -714,12 +732,18 @@ class TdxClient:
         results: list[HistoricalFundFlow] = []
         for bar in bars:
             date = _date_from_bar(bar)
+            if date == _today_in_shanghai():
+                results.append(
+                    _historical_fund_flow_from_flow(date, self.get_fund_flow(market, code))
+                )
+                continue
             records = self._collect_transaction_records(
                 lambda page_start, page_size: self.get_history_transaction_data(
                     market, code, date, page_start, page_size
                 ),
-                800,
             )
+            if not records:
+                raise TdxResponseError(f"{market.name}:{code} 在 {date} 的历史逐笔成交为空")
             results.append(_historical_fund_flow_from_records(date, records))
         return results
 
@@ -1156,8 +1180,7 @@ class AsyncTdxClient:
     async def _collect_transaction_records(
         self,
         fetch_page: Callable[[int, int], Awaitable[list[TransactionRecord]]],
-        page_size: int,
-        max_start: int = 10000,
+        page_size: int = 800,
     ) -> list[TransactionRecord]:
         all_recs: list[TransactionRecord] = []
         seen_page_sigs: set[
@@ -1165,36 +1188,40 @@ class AsyncTdxClient:
         ] = set()
         start = 0
 
-        while start < max_start:
+        while start <= 0xFFFF:
             recs = await fetch_page(start, page_size)
             if not recs:
                 break
 
             page_sig = _page_signature(recs)
             if page_sig in seen_page_sigs:
-                break
+                raise TdxResponseError(f"逐笔成交在偏移 {start} 返回重复页面")
             seen_page_sigs.add(page_sig)
 
             overlap = _boundary_overlap(all_recs, recs)
-            new_records = recs[overlap:]
+            new_records = recs[:-overlap] if overlap else recs
             if not new_records:
-                break
-            all_recs.extend(new_records)
+                raise TdxResponseError(f"逐笔成交在偏移 {start} 没有产生新记录")
+            all_recs = new_records + all_recs
 
-            start += len(recs)
-            if len(recs) < page_size:
-                break
+            next_start = start + len(recs)
+            if next_start > 0xFFFF:
+                raise TdxResponseError("逐笔成交超过协议 uint16 分页范围")
+            start = next_start
 
         return all_recs
 
     async def get_fund_flow(self, market: Market, code: str) -> FundFlow:
         """获取个股当日资金流向分布（基于 L1 逐笔数据统计）。"""
+        quotes = await self.get_security_quotes([(market, code)])
+        if not quotes:
+            raise TdxResponseError(f"无法获取 {market.name}:{code} 行情以校验资金流完整性")
         records = await self._collect_transaction_records(
             lambda start, page_size: self.get_transaction_data(
                 market, code, start, page_size
             ),
-            2000,
         )
+        _validate_fund_flow_coverage(records, quotes[0])
         return _classify_fund_flow(records)
 
     async def get_history_fund_flow(
@@ -1216,11 +1243,19 @@ class AsyncTdxClient:
         results: list[HistoricalFundFlow] = []
         for bar in bars:
             date = _date_from_bar(bar)
+            if date == _today_in_shanghai():
+                results.append(
+                    _historical_fund_flow_from_flow(
+                        date, await self.get_fund_flow(market, code)
+                    )
+                )
+                continue
             records = await self._collect_transaction_records(
                 lambda page_start, page_size: self.get_history_transaction_data(
                     market, code, date, page_start, page_size
                 ),
-                800,
             )
+            if not records:
+                raise TdxResponseError(f"{market.name}:{code} 在 {date} 的历史逐笔成交为空")
             results.append(_historical_fund_flow_from_records(date, records))
         return results

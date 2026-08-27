@@ -21,7 +21,7 @@ class GetTransactionDataCmd(BaseCommand[list[TransactionRecord]]):
         self.market = market
         self.code = validate_code(code).encode("ascii")
         self.start = validate_uint16(start, "start")
-        self.count = validate_count(count, 2000)
+        self.count = validate_count(count, 800)
 
     def build_request(self) -> bytes:
         header = bytes.fromhex("0c170801010 10e000e00c50f".replace(" ", ""))
@@ -43,7 +43,7 @@ class GetHistoryTransactionDataCmd(BaseCommand[list[TransactionRecord]]):
         self.code = validate_code(code).encode("ascii")
         self.date = validate_date(date)
         self.start = validate_uint16(start, "start")
-        self.count = validate_count(count, 2000)
+        self.count = validate_count(count, 800)
 
     def build_request(self) -> bytes:
         # 历史逐笔：header + pack("<IH6sHH", date, market, code, start, count)
